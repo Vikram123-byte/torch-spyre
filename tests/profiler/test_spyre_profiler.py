@@ -162,3 +162,48 @@ def test_synchronize_callable():
 
     assert result.numel() == 64 * 64
     assert torch.isfinite(result).all()
+
+
+@pytest.mark.requires_spyre_profiler
+def test_kineto_memcpy_and_memset_events_captured():
+    """
+    Confirm that H2D memcpy, D2H memcpy, and memset events are captured
+    in the kineto-spyre Chrome trace when profiling with PrivateUse1.
+
+    Triggered operations:
+      - H2D: cpu_tensor.to("spyre")
+      - memset: torch.zeros(..., device="spyre")
+      - D2H: device_tensor.cpu()
+    """
+    cpu_src = torch.randn(64, 64, dtype=torch.float16)
+
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]
+    ) as prof:
+        device_tensor = cpu_src.to("spyre")
+        _ = torch.zeros(64, 64, dtype=torch.float16, device="spyre")
+        _ = device_tensor.cpu()
+
+    with TemporaryFileName(mode="w+") as fname:
+        prof.export_chrome_trace(fname)
+        with open(fname) as f:
+            trace = json.load(f)
+
+    events = trace["traceEvents"]
+
+    h2d_events = [
+        e for e in events if e.get("cat") == "gpu_memcpy" and "H2D" in e.get("name", "")
+    ]
+    assert h2d_events, (
+        "Expected at least one H2D memcpy event in the kineto-spyre trace"
+    )
+
+    d2h_events = [
+        e for e in events if e.get("cat") == "gpu_memcpy" and "D2H" in e.get("name", "")
+    ]
+    assert d2h_events, (
+        "Expected at least one D2H memcpy event in the kineto-spyre trace"
+    )
+
+    memset_events = [e for e in events if e.get("cat") == "gpu_memset"]
+    assert memset_events, "Expected at least one memset event in the kineto-spyre trace"
