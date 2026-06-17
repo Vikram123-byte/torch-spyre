@@ -183,12 +183,16 @@ def test_kineto_memcpy_and_memset_events_captured():
         device_tensor = cpu_src.to("spyre")
         _ = torch.zeros(64, 64, dtype=torch.float16, device="spyre")
         _ = device_tensor.cpu()
+        torch.spyre.synchronize()
 
     with TemporaryFileName(mode="w+") as fname:
         prof.export_chrome_trace(fname)
         with open(fname) as f:
             trace = json.load(f)
 
+    assert "traceEvents" in trace, (
+        "Chrome trace is missing 'traceEvents' key — export may have failed"
+    )
     events = trace["traceEvents"]
 
     h2d_events = [
