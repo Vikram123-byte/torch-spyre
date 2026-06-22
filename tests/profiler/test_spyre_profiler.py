@@ -174,6 +174,8 @@ def test_kineto_memcpy_and_memset_events_captured():
       - H2D: cpu_tensor.to("spyre")
       - memset: torch.zeros(..., device="spyre")
       - D2H: device_tensor.cpu()
+
+    Note: P2P (device-to-device) transfers are out of scope for this test.
     """
     cpu_src = torch.randn(64, 64, dtype=torch.float16)
 
@@ -195,15 +197,23 @@ def test_kineto_memcpy_and_memset_events_captured():
     )
     events = trace["traceEvents"]
 
+    # "gpu_memcpy" / "gpu_memset" are emitted by libkineto's ActivityType::type_string()
+    # (upstream kineto, not kineto-spyre-specific) and have been stable across all kineto
+    # versions used by torch-spyre. kineto-spyre maps Spyre memory activities to these
+    # standard ActivityType values; the Chrome trace writer produces these category strings.
     h2d_events = [
-        e for e in events if e.get("cat") == "gpu_memcpy" and "H2D" in e.get("name", "")
+        e
+        for e in events
+        if e.get("cat") == "gpu_memcpy" and "HtoD" in e.get("name", "")
     ]
     assert h2d_events, (
         "Expected at least one H2D memcpy event in the kineto-spyre trace"
     )
 
     d2h_events = [
-        e for e in events if e.get("cat") == "gpu_memcpy" and "D2H" in e.get("name", "")
+        e
+        for e in events
+        if e.get("cat") == "gpu_memcpy" and "DtoH" in e.get("name", "")
     ]
     assert d2h_events, (
         "Expected at least one D2H memcpy event in the kineto-spyre trace"
