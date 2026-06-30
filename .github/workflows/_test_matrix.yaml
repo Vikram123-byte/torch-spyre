@@ -213,6 +213,8 @@ jobs:
             config: torch_spyre_tests/inductor/test_unroll_loop_specs_config.yaml
           - name: Inductor Work Division Hint
             config: torch_spyre_tests/inductor/test_work_division_hint_config.yaml
+          - name: Inductor Provenance
+            config: torch_spyre_tests/inductor/test_provenance_config.yaml
           - name: Inductor Tensor Transpose
             config: torch_spyre_tests/inductor/test_inductor_transpose_edge_config.yaml
           # ---- Indirect Access tests ----

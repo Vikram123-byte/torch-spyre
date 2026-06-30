@@ -346,6 +346,38 @@ def compile_backend(pytestconfig):
     return s or None
 
 
+@pytest.fixture
+def sample_provenance_payload():
+    return {
+        "kernels": [
+            {
+                "kernel_name": "sdsc_linear_relu",
+                "compiled_kernel": "sdsc_linear_relu__h17-23",
+                "handles": [
+                    {"debug_handle": 17, "fx_nodes": ["linear"]},
+                    {"debug_handle": 23, "fx_nodes": ["relu"]},
+                ],
+                "ir_stages": [
+                    {"name": "fx", "handles": [17, 23]},
+                    {"name": "scheduler", "handles": [17, 23]},
+                    {"name": "opspec", "handles": [17, 23]},
+                    {"name": "sdsc", "handles": [17, 23]},
+                ],
+                "profiler_events": [
+                    {
+                        "name": "launch_kernel:sdsc_linear_relu__h17-23",
+                        "debug_handle": 17,
+                    },
+                    {
+                        "name": "launch_kernel:sdsc_linear_relu__h17-23",
+                        "debug_handle": 23,
+                    },
+                ],
+            }
+        ]
+    }
+
+
 def pytest_configure(config):
     shared_config._PYTEST_CONFIG = config
 
