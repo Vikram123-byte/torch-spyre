@@ -130,15 +130,17 @@ def _assert_kernel_provenance(kernel_record):
         assert handle["fx_nodes"]
 
     for stage in kernel_record["ir_stages"]:
-        assert stage["handles"]
-        assert set(stage["handles"]) == handle_ids
+        stage_handles = stage["handles"]
+        assert stage_handles
+        assert set(stage_handles) == handle_ids
+        assert len(stage_handles) == len(handle_ids)
 
     for event in kernel_record.get("profiler_events", []):
         assert event["debug_handle"] in handle_ids
 
-    kernel_name = kernel_record["compiled_kernel"]
+    compiled_kernel = kernel_record["compiled_kernel"]
     expected_handles = "-".join(str(handle_id) for handle_id in sorted(handle_ids))
-    assert kernel_name.endswith(f"__h{expected_handles}")
+    assert compiled_kernel.endswith(f"__h{expected_handles}")
 
 
 def test_spyre_provenance_json_validates_against_schema(sample_provenance_payload):
@@ -160,6 +162,16 @@ def test_spyre_provenance_negative_missing_handle_fails(sample_provenance_payloa
         _assert_kernel_provenance(broken_payload["kernels"][0])
 
 
+def test_spyre_provenance_negative_duplicate_stage_handle_fails(
+    sample_provenance_payload,
+):
+    broken_payload = json.loads(json.dumps(sample_provenance_payload))
+    broken_payload["kernels"][0]["ir_stages"][0]["handles"] = [17, 23, 23]
+
+    with pytest.raises(AssertionError):
+        _assert_kernel_provenance(broken_payload["kernels"][0])
+
+
 @pytest.mark.parametrize(
     ("compiled_kernel", "handle_ids"),
     [
@@ -173,7 +185,9 @@ def test_spyre_provenance_negative_missing_handle_fails(sample_provenance_payloa
     ],
 )
 def test_kernel_name_encoding_matches_expected_format(compiled_kernel, handle_ids):
+    kernel_name = compiled_kernel.partition("__h")[0]
     kernel_record = {
+        "kernel_name": kernel_name,
         "compiled_kernel": compiled_kernel,
         "handles": [
             {"debug_handle": handle_id, "fx_nodes": [f"node_{handle_id}"]}
