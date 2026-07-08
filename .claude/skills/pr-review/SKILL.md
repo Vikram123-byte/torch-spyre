@@ -66,7 +66,7 @@ The PR must pass all pre-commit hooks:
 - **mypy** — Type checking
 - **pymarkdown** — Markdown linting
 - **yamlfmt** — YAML formatting
-- **enforce-import-regex** — Must use `import regex`, never `import re`
+- **enforce-import-regex** — Must use `import regex as re`, never `import re`
 
 ### 3. Signed Commits (DCO)
 

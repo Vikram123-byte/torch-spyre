@@ -2,6 +2,20 @@
 
 This workflow guides developers from initial operator verification through full test retrieval and bug classification.
 
+## Slash command
+
+In chat, type `/add-spyre-op` followed by the op name (for example,
+`/add-spyre-op hardswish`) to run the guided op-enablement workflow. The
+prompt file is at
+[`.github/prompts/add-spyre-op.prompt.md`](https://github.com/torch-spyre/torch-spyre/blob/main/.github/prompts/add-spyre-op.prompt.md).
+
+The command walks through pattern selection, implementation, model
+verification, unit tests, OOT config wiring, and pre-commit checks. It
+reads the skills in `.claude/skills/add-spyre-operation/` and
+`.claude/skills/write-spyre-op-test/` before writing any code.
+
+## Workflow steps
+
 1. Create an op enablement Issue
 2. Verify basic functionality
 3. Add a unit test in torch-spyre

@@ -8,7 +8,7 @@ Quick reference for reviewing torch-spyre pull requests.
   C++: `/* */` block)
 - [ ] **Signed commits** — every commit has `Signed-off-by:` (DCO)
 - [ ] **Pre-commit passes** — ruff, clang-format, cpplint, mypy, pymarkdown
-- [ ] **`import regex`** — never `import re` in Python files
+- [ ] **`import regex as re`** — never `import re` in Python files
 - [ ] **Tests exist** for new/changed functionality
 - [ ] **`Unsupported()`** used for unsupported-op errors (not bare
   `RuntimeError`)
@@ -31,9 +31,10 @@ Quick reference for reviewing torch-spyre pull requests.
 
 - [ ] `compare_with_cpu()` or `compare()` used in
   `tests/inductor/test_inductor_ops.py`
-- [ ] Shape variety: 1D, 2D, 3D, 4D
-- [ ] Stick-aligned and non-aligned sizes tested
-- [ ] `torch.float16` as default dtype
+- [ ] Shapes and dtypes match the nearest similar op pattern in
+  `tests/inductor/test_inductor_ops.py`
+- [ ] Stick-aligned and non-aligned sizes tested when that class of op does
+- [ ] `torch.float16` preferred unless the similar op uses another dtype
 - [ ] `ParameterizedTestMeta` for parameterized tests
 - [ ] `torch.manual_seed(0xAFFE)` set at class level
 

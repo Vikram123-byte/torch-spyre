@@ -15,10 +15,10 @@
 """
 Template for writing Spyre compiled-path operation tests.
 
-Copy this file to tests/_inductor/ and rename it. Then:
+Copy this file to tests/inductor/ and rename it. Then:
 1. Replace the op dict and param sets with your operation
 2. Implement the base test functions
-3. Run: python3 -m pytest tests/_inductor/<your_test>.py
+3. Run: python3 -m pytest tests/inductor/<your_test>.py
 """
 
 import unittest

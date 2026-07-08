@@ -151,7 +151,7 @@ Every new op requires two levels of validation:
 
 2. **Unit tests** — add compiled-path and (if applicable) eager-path tests.
    See the `write-spyre-op-test` skill for details. At minimum:
-   - **Compiled-path test** in `tests/_inductor/test_inductor_ops.py` using
+   - **Compiled-path test** in `tests/inductor/test_inductor_ops.py` using
      `compare_with_cpu()` or `compare()`
    - **Shape variety:** 1D through 4D, stick-aligned (multiples of 64) and
      non-aligned sizes

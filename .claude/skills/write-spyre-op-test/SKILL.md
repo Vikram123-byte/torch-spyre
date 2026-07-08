@@ -1,12 +1,12 @@
 ---
 name: write-spyre-op-test
-description: "Guide for writing compiled-path operator tests using the ParameterizedTestMeta framework and compare_with_cpu utilities. Use when adding tests for new or existing Spyre ops in tests/_inductor/test_inductor_ops.py."
+description: "Guide for writing compiled-path operator tests using the ParameterizedTestMeta framework and compare_with_cpu utilities. Use when adding tests for new or existing Spyre ops in tests/inductor/test_inductor_ops.py."
 ---
 
 # Writing Compiled-Path Operator Tests
 
 This skill covers the `ParameterizedTestMeta` + `compare_with_cpu` pattern
-used in `tests/_inductor/test_inductor_ops.py` — the standard way to test
+used in `tests/inductor/test_inductor_ops.py` — the standard way to test
 individual operations on the Spyre compiled path. See `test-template.py` in
 this directory for a ready-to-use skeleton.
 
@@ -21,10 +21,10 @@ this directory for a ready-to-use skeleton.
 
 | Test type | File |
 |---|---|
-| Compiled-path op tests | `tests/_inductor/test_inductor_ops.py` |
+| Compiled-path op tests | `tests/inductor/test_inductor_ops.py` |
 | Eager-path op tests | `tests/test_ops.py` |
 
-All test utilities live in `tests/_inductor/utils_inductor.py`.
+All test utilities live in `tests/inductor/utils_inductor.py`.
 
 ---
 
@@ -148,12 +148,18 @@ Convert shape tuples to a string key: `((4, 8), (4, 8))` → `"4x8_4x8"`.
 
 ## Shape Selection Guidelines
 
-Include variety across these dimensions:
+Do not always use one fixed shape matrix. Look up the nearest similar op
+in `tests/inductor/test_inductor_ops.py` and reuse its `param_sets` /
+dtypes / helpers when they fit. Reductions, scalars, matmul, and int ops
+use different patterns than pointwise float ops.
+
+For pointwise-style ops, include variety across these dimensions when
+applicable:
 
 - **Dimensionality:** 1D, 2D, 3D, and 4D where applicable
 - **Stick alignment:** Include both multiples of 64 (stick-aligned) and
   non-multiples (e.g., 67, 71) to test padding behavior
-- **Common sizes:** `(256,)`, `(67, 256)`, `(67, 71, 256)`,
+- **Common pointwise sizes:** `(256,)`, `(67, 256)`, `(67, 71, 256)`,
   `(7, 12, 32, 64)`
 
 ```python
@@ -182,7 +188,7 @@ make_param_dict([
 - **Random seed:** `torch.manual_seed(0xAFFE)` at class level
 - **Default tolerances:** `atol=0.1, rtol=0.1`
 - **License header:** Every test file needs the 14-line Apache 2.0 header
-- **Imports:** Use `import regex` not `import re`
+- **Imports:** Use `import regex as re`, never `import re`
 
 ---
 
@@ -190,10 +196,10 @@ make_param_dict([
 
 ```bash
 # All compiled-path tests
-python3 -m pytest tests/_inductor/test_inductor_ops.py
+python3 -m pytest tests/inductor/test_inductor_ops.py
 
 # Single test
-python3 -m pytest tests/_inductor/test_inductor_ops.py -k "test_my_op"
+python3 -m pytest tests/inductor/test_inductor_ops.py -k "test_my_op"
 
 # All tests
 python3 -m pytest tests/
