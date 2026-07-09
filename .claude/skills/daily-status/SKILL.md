@@ -32,7 +32,7 @@ The user may pass arguments to customize the output:
 
    | Format flag | Sections |
    |---|---|
-   | `pbr` (default) | Progress / Blockers / Awaiting Re-Review / WIP |
+   | `pbr` (default) | Progress / Blockers / Awaiting Re-Review / WIP (when drafts exist) |
    | `ytb` | Yesterday / Today / Blockers |
    | `custom` | Ask the user for section names |
 
@@ -48,8 +48,9 @@ The user may pass arguments to customize the output:
      --json number,title,state,mergedAt,updatedAt,isDraft,reviewDecision,statusCheckRollup,headRefName
    ```
 
-   Fetch commit SHAs for each merged PR in the window (for dedup in
-   step 6):
+   Fetch commit SHAs for each PR that may be shown elsewhere in the
+   output: merged PRs in the window and open PRs that remain in scope
+   after step 7's `state == "OPEN"` filter (for dedup in step 6):
 
    ```bash
    gh pr view <NUMBER> --json commits --jq '.commits[].oid'
@@ -58,11 +59,12 @@ The user may pass arguments to customize the output:
 6. Gather progress activity, scoped to the time window and repo list:
 
    ```bash
-   # Commits authored in the time window (try name, then email if empty)
+   # Commits authored in the time window (try name, then fall back to email if empty)
    git log --all --author="$(git config user.name)" --since="<WINDOW>" \
-     --format="%h %s" --no-merges
+     --format="%H %s" --no-merges
+   # Only if the name-based query returns no commits:
    git log --all --author="$(git config user.email)" --since="<WINDOW>" \
-     --format="%h %s" --no-merges
+     --format="%H %s" --no-merges
 
    # Issues assigned to the user (optionally filtered by label)
    gh issue list --assignee="@me" --state open --limit 20 \
@@ -76,25 +78,33 @@ The user may pass arguments to customize the output:
 
    - Merged PRs where `mergedAt > <ISO_TIMESTAMP>`: one bullet each,
      e.g. `#1234: <title> (merged)`. Do **not** also list their commits.
-   - Commits from `git log` that are **not** SHAs belonging to a merged
-     PR in the window (dedup against step 5). Use commit-message bullets
-     only; do **not** prefix with a PR number (step 7 owns open PRs).
+   - Commits from `git log` that are **not** SHAs belonging to any PR
+     shown elsewhere. Dedup against both merged PRs and open PRs before
+     using commit-message bullets. Use commit-message bullets only; do
+     **not** prefix with a PR number (step 7 owns open PRs). Compare
+     exact SHAs: step 5 returns full commit `oid` values, so step 6 must
+     use full commit SHAs too.
 
    Open PRs are classified in step 7 only — Blockers, Awaiting Re-Review,
-   or WIP. Do **not** list them in Progress. Draft PRs belong in **WIP**
-   only.
+   or WIP. Do **not** list them in Progress. Open draft PRs belong in
+   **WIP** only; merged PRs belong in **Progress**.
 
-7. Classify open PRs (from step 5). Each PR belongs in **at most one**
-   section. Apply rules in this order:
+7. Classify open PRs (from step 5). First filter to PRs where
+   `state == "OPEN"`; treat closed PRs as out of scope for this step.
+   Each remaining PR belongs in **at most one** section. Apply rules in
+   this order:
 
    | Condition | Section |
    |---|---|
+   | CI failure (`statusCheckRollup` contains `FAILURE`) | **Blockers** |
    | `isDraft == true` | **WIP** — not a blocker |
    | `reviewDecision == "CHANGES_REQUESTED"` and `updatedAt > <ISO_TIMESTAMP>` | **Awaiting Re-Review** |
    | `reviewDecision == "CHANGES_REQUESTED"` but not updated in window | Skip (stale; omit unless user asks) |
-   | CI failure (`statusCheckRollup` contains `FAILURE`) | **Blockers** |
    | `reviewDecision` is `REVIEW_REQUIRED`, `null`, or pending (non-draft) | **Blockers** — awaiting first review |
    | `reviewDecision == "APPROVED"` and CI passing | Not a blocker |
+
+   CI failure takes precedence over other states so a red check is never
+   hidden under **Awaiting Re-Review** or **WIP**.
 
    **Consolidate to one bullet per PR.** Combine signals on a single line,
    e.g. `#1234: <title> — CI failing, awaiting review`.
@@ -112,8 +122,8 @@ The user may pass arguments to customize the output:
 
    If nothing awaits re-review, write "None".
 
-9. **WIP** — draft PRs (`isDraft == true`). List separately so work-in-
-   progress does not look like a blocker:
+9. **WIP** — open draft PRs (`state == "OPEN"` and `isDraft == true`).
+   List separately so work-in-progress does not look like a blocker:
 
    ```
    - #567: <title> (draft)
@@ -180,8 +190,8 @@ The user may pass arguments to customize the output:
 
 - If `gh` is not authenticated, instruct the user to run `gh auth login`.
 - If `git log --author` returns nothing with `user.name`, fall back to
-  `user.email`. If both fail, warn the user their git identity may not
-  match their GitHub commits.
+  `user.email`. Do not run both queries unconditionally. If both fail, warn
+  the user their git identity may not match their GitHub commits.
 - For multi-repo updates, group bullets by repo only when items come from
   more than one repo. Otherwise skip the repo header.
 - The skill works in any GitHub-hosted project, not just torch-spyre.
