@@ -41,20 +41,25 @@ The user may pass arguments to customize the output:
    timestamp (`<ISO_TIMESTAMP>`) for `gh` queries and a git `--since`
    value (`<WINDOW>`) for `git log`.
 
-5. Gather open and merged PRs in one query (used by steps 6–8):
+5. Gather open and merged PRs in one query (used by steps 6–9):
 
    ```bash
    gh pr list --author="@me" --state all --limit 30 \
-     --json number,title,state,mergedAt,updatedAt,isDraft,reviewDecision,statusCheckRollup,headRefName
+     --json number,title,state,mergedAt,isDraft,reviewDecision,statusCheckRollup,headRefName
    ```
 
-   Fetch commit SHAs for each PR that may be shown elsewhere in the
-   output: merged PRs in the window and open PRs that remain in scope
-   after step 7's `state == "OPEN"` filter (for dedup in step 6):
+   Fetch commit data for open PRs that remain in scope after step 7's
+   `state == "OPEN"` filter (SHA dedup in step 6; latest push time for
+   steps 7–8):
 
    ```bash
-   gh pr view <NUMBER> --json commits --jq '.commits[].oid'
+   gh pr view <NUMBER> --json commits \
+     --jq '.commits[] | "\(.oid) \(.committedDate)"'
+   # Latest author push: .commits[-1].committedDate
    ```
+
+   Do **not** rely on PR commit SHAs to dedup merged work — torch-spyre
+   squash-merges, so the commit on `main` gets a new SHA.
 
 6. Gather progress activity, scoped to the time window and repo list:
 
@@ -78,12 +83,15 @@ The user may pass arguments to customize the output:
 
    - Merged PRs where `mergedAt > <ISO_TIMESTAMP>`: one bullet each,
      e.g. `#1234: <title> (merged)`. Do **not** also list their commits.
-   - Commits from `git log` that are **not** SHAs belonging to any PR
-     shown elsewhere. Dedup against both merged PRs and open PRs before
-     using commit-message bullets. Use commit-message bullets only; do
-     **not** prefix with a PR number (step 7 owns open PRs). Compare
-     exact SHAs: step 5 returns full commit `oid` values, so step 6 must
-     use full commit SHAs too.
+   - Commits from `git log` that are **not** already represented elsewhere.
+     Dedup before using commit-message bullets:
+     - **Open PRs:** exclude commits whose SHA is in that PR's `oid`
+       list (step 5). Compare exact SHAs — step 6 must use `%H`.
+     - **Merged PRs:** exclude commits whose subject contains the
+       squash-merge trailer `(#<NUMBER>)` for any merged PR listed above.
+       SHA matching alone is not enough after squash-merge.
+     Use commit-message bullets only; do **not** prefix with a PR number
+     (step 7 owns open PRs). If every commit is deduped, write "None".
 
    Open PRs are classified in step 7 only — Blockers, Awaiting Re-Review,
    or WIP. Do **not** list them in Progress. Open draft PRs belong in
@@ -98,8 +106,10 @@ The user may pass arguments to customize the output:
    |---|---|
    | CI failure (`statusCheckRollup` contains `FAILURE`) | **Blockers** |
    | `isDraft == true` | **WIP** — not a blocker |
-   | `reviewDecision == "CHANGES_REQUESTED"` and `updatedAt > <ISO_TIMESTAMP>` | **Awaiting Re-Review** |
-   | `reviewDecision == "CHANGES_REQUESTED"` but not updated in window | Skip (stale; omit unless user asks) |
+   | `reviewDecision == "CHANGES_REQUESTED"` and latest commit
+     `committedDate > <ISO_TIMESTAMP>` | **Awaiting Re-Review** |
+   | `reviewDecision == "CHANGES_REQUESTED"` but latest commit not in
+     window | Skip (stale; omit unless user asks) |
    | `reviewDecision` is `REVIEW_REQUIRED`, `null`, or pending (non-draft) | **Blockers** — awaiting first review |
    | `reviewDecision == "APPROVED"` and CI passing | Not a blocker |
 
@@ -113,11 +123,14 @@ The user may pass arguments to customize the output:
 
 8. **Awaiting Re-Review** — PRs where you pushed after review feedback
    and reviewers need to re-check. This is **not** the same as a blocker
-   waiting on first-pass review.
+   waiting on first-pass review. Use the latest commit's `committedDate`
+   (step 5), not `updatedAt` — the latter bumps on reviewer comments,
+   labels, and other activity while `reviewDecision` stays
+   `CHANGES_REQUESTED`.
 
    ```bash
-   # From step 5 data: isDraft == false, reviewDecision == "CHANGES_REQUESTED",
-   # updatedAt > <ISO_TIMESTAMP>
+   # From step 5: isDraft == false, reviewDecision == "CHANGES_REQUESTED",
+   # .commits[-1].committedDate > <ISO_TIMESTAMP>
    ```
 
    If nothing awaits re-review, write "None".
@@ -181,7 +194,8 @@ The user may pass arguments to customize the output:
     - No emojis unless the user requests them.
     - Keep it concise — the reader skims dozens of these in a thread.
     - **Dedup:** never show the same PR in both Progress and another
-      section. Merged PRs appear once under Progress, not as commits.
+      section. Merged PRs appear once under Progress — by PR bullet for
+      squash-merges, not again as a commit bullet.
 
 11. Show the formatted update and ask if the user wants to adjust
     anything before posting.
