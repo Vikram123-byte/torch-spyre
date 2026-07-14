@@ -171,33 +171,180 @@ def _extract_pdf(path: Path) -> list[str]:
     return pages
 
 
-def _extract_pptx(path: Path) -> list[str]:
-    """Extract text from a PowerPoint file. Returns one string per slide."""
+def _pptx_via_python_pptx(path: Path) -> list[str] | None:
+    """
+    Try to extract slides using python-pptx. Returns None if the file uses
+    a non-standard namespace (e.g. purl.oclc.org) that python-pptx rejects.
+    """
     try:
         from pptx import Presentation
     except ImportError:
         log.error("python-pptx not installed. Run: pip install python-pptx")
         return []
 
-    slides: list[str] = []
+    _SKIP_PLACEHOLDER_TYPES = {13, 14, 15}
+
+    def _slide_text(slide) -> tuple[str, str]:
+        title = ""
+        body_lines: list[str] = []
+        if slide.shapes.title:
+            title = (
+                (slide.shapes.title.text or "")
+                .replace("\x0b", " ")
+                .replace("\xa0", " ")
+                .strip()
+            )
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            if shape == slide.shapes.title:
+                continue
+            try:
+                if (
+                    shape.placeholder_format
+                    and shape.placeholder_format.type in _SKIP_PLACEHOLDER_TYPES
+                ):
+                    continue
+            except Exception:
+                pass
+            for para in shape.text_frame.paragraphs:
+                line = para.text.replace("\x0b", " ").replace("\xa0", " ").strip()
+                if (
+                    not line
+                    or line in ("Footer",)
+                    or (line.isdigit() and len(line) <= 2)
+                ):
+                    continue
+                body_lines.append(line)
+        return title, "\n".join(body_lines).strip()
+
     try:
         prs = Presentation(str(path))
+        raw: list[tuple[int, str, str]] = []
         for i, slide in enumerate(prs.slides, start=1):
-            parts: list[str] = []
-            if slide.shapes.title and slide.shapes.title.text.strip():
-                parts.append(f"[Slide {i}] {slide.shapes.title.text.strip()}")
-            for shape in slide.shapes:
-                if shape.has_text_frame:
-                    for para in shape.text_frame.paragraphs:
-                        line = para.text.strip()
-                        if line:
-                            parts.append(line)
-            text = "\n".join(parts).strip()
-            if text:
-                slides.append(text)
+            t, b = _slide_text(slide)
+            raw.append((i, t, b))
+        return _merge_slides(raw)
     except Exception as exc:
-        log.warning("Failed to extract PPTX %s: %s", path, exc)
-    return slides
+        log.debug("python-pptx failed (%s) — will try raw XML fallback.", exc)
+        return None
+
+
+def _pptx_via_raw_xml(path: Path) -> list[str]:
+    """
+    Fallback PPTX extractor using raw ZIP+XML parsing.
+    Works on files with non-standard namespaces that python-pptx rejects
+    (e.g. files using purl.oclc.org/ooxml instead of schemas.openxmlformats.org).
+    """
+    import zipfile
+    import regex as re
+
+    try:
+        with zipfile.ZipFile(str(path)) as z:
+            names = z.namelist()
+
+            # Determine slide order from presentation.xml (sldIdLst), not rels.
+            # The rels file lists slides in arbitrary order; presentation.xml has the correct sequence.
+            pres_xml = z.read("ppt/presentation.xml").decode("utf-8", errors="replace")
+            # Match r:id attributes in sldId elements to get display order.
+            ordered_rids = re.findall(
+                r'<[^>]*:sldId\b[^>]*\br:id=["\']([^"\']+)["\']', pres_xml
+            )
+            # Build rid→target map from rels.
+            rels_xml = z.read("ppt/_rels/presentation.xml.rels").decode(
+                "utf-8", errors="replace"
+            )
+            rid_to_target: dict[str, str] = {}
+            for m in re.finditer(
+                r'Id=["\']([^"\']+)["\'][^>]*Target=["\']([^"\']+)["\']', rels_xml
+            ):
+                rid_to_target[m.group(1)] = m.group(2)
+            # Also try reversed attribute order.
+            for m in re.finditer(
+                r'Target=["\']([^"\']+)["\'][^>]*Id=["\']([^"\']+)["\']', rels_xml
+            ):
+                rid_to_target[m.group(2)] = m.group(1)
+
+            # Build ordered slide list; fall back to numeric sort if order detection fails.
+            slide_files_ordered: list[str] = []
+            for rid in ordered_rids:
+                target = rid_to_target.get(rid, "")
+                m = re.search(r"slide\d+", target)
+                if m:
+                    slide_files_ordered.append(m.group())
+            if not slide_files_ordered:
+                # Fallback: all slide files sorted numerically.
+                slide_files_ordered = sorted(
+                    [
+                        re.search(r"slide\d+", n).group()
+                        for n in names
+                        if re.search(r"ppt/slides/slide\d+\.xml$", n)
+                    ],
+                    key=lambda x: int(re.search(r"\d+", x).group()),
+                )
+
+            raw: list[tuple[int, str, str]] = []
+            for display_num, slide_name in enumerate(slide_files_ordered, start=1):
+                zip_path = f"ppt/slides/{slide_name}.xml"
+                if zip_path not in names:
+                    continue
+                xml = z.read(zip_path).decode("utf-8", errors="replace")
+                # Extract all text runs — namespace-agnostic: match any prefix:t element.
+                texts = re.findall(r"<[a-z]+:t[^>]*>(.*?)</[a-z]+:t>", xml, re.DOTALL)
+                clean: list[str] = []
+                for t in texts:
+                    t = re.sub(r"<[^>]+>", "", t).strip()
+                    t = (
+                        t.replace("&#x0B;", " ")
+                        .replace("&#xA0;", " ")
+                        .replace("\x0b", " ")
+                        .replace("\xa0", " ")
+                        .strip()
+                    )
+                    if t and t not in ("Footer",) and not (t.isdigit() and len(t) <= 2):
+                        clean.append(t)
+                if clean:
+                    title = clean[0] if clean else ""
+                    body = "\n".join(clean[1:]) if len(clean) > 1 else ""
+                    raw.append((display_num, title, body))
+
+        return _merge_slides(raw)
+    except Exception as exc:
+        log.warning("Raw XML PPTX extraction failed for %s: %s", path, exc)
+        return []
+
+
+def _merge_slides(raw: list[tuple[int, str, str]]) -> list[str]:
+    """Merge title-only slides with the next slide and assemble text blocks."""
+    merged: list[str] = []
+    pending_title = ""
+    for slide_num, title, body in raw:
+        effective_title = pending_title or title
+        if not body:
+            pending_title = effective_title or pending_title
+            continue
+        parts: list[str] = []
+        if effective_title:
+            parts.append(f"[Slide {slide_num}] {effective_title}")
+        parts.append(body)
+        merged.append("\n".join(parts))
+        pending_title = ""
+    if pending_title:
+        merged.append(f"[Section] {pending_title}")
+    return merged
+
+
+def _extract_pptx(path: Path) -> list[str]:
+    """
+    Extract text from a PowerPoint file.
+    Tries python-pptx first; falls back to raw XML extraction for files
+    with non-standard namespaces (e.g. Box-exported or older PPTX files).
+    """
+    result = _pptx_via_python_pptx(path)
+    if result is None:
+        log.info("Using raw XML fallback for %s", path.name)
+        result = _pptx_via_raw_xml(path)
+    return result
 
 
 def _extract_docx(path: Path) -> list[str]:

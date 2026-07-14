@@ -286,11 +286,23 @@ function renderChunk(c) {
   const stale = c.staleness_ttl_flag
     ? `<span style="color:var(--warn)">⚠ stale</span>` : '';
 
+  // Show just the filename for external docs (full path is too noisy),
+  // full relative path for repo files.
+  const displayPath = c.doc_type === 'external_doc'
+    ? c.file_path.split('/').pop()
+    : c.file_path;
+
+  // If there's a real source URL (not just the file path), make it a link.
+  const pathHtml = (c.source_url && c.source_url !== c.file_path)
+    ? `<a href="${esc(c.source_url)}" target="_blank" style="color:var(--accent);text-decoration:none"
+         title="Open source: ${esc(c.source_url)}">${esc(displayPath)} ↗</a>`
+    : `<span>${esc(displayPath)}</span>`;
+
   return `
     <div class="chunk">
       <div class="chunk-head">
         <span class="chunk-rank">#${c.rank}</span>
-        <span class="chunk-path" title="${esc(c.file_path)}">${esc(c.file_path)}</span>
+        <span class="chunk-path" title="${esc(c.file_path)}">${pathHtml}</span>
         <span class="badge ${esc(c.doc_type)}">${esc(c.doc_type)}</span>
         <span class="chunk-scores">score ${c.score.toFixed(4)} · rrf ${c.rrf_score.toFixed(4)}</span>
       </div>
@@ -361,22 +373,26 @@ async function submit() {
 
     addHistory(q);
 
-    const quotaMode = data.answer.startsWith('⚠ watsonx.ai quota exhausted');
+    const quotaMode = data.answer.startsWith('⚠ No relevant context');
     const noResults = data.answer.startsWith('⚠ No relevant context');
+    const hydeSkipped = data.hyde_hypothesis && data.hyde_hypothesis.startsWith('[HyDE skipped');
 
     // ── Build result block ──────────────────────────────────────────────────
     let html = `<div style="display:flex;flex-direction:column;gap:12px;border-top:2px solid var(--border);padding-top:16px">`;
     html += `<div style="font-size:12px;color:var(--muted)">Query: <b>${esc(data.query)}</b></div>`;
 
     if (quotaMode) {
-      // Show a clean banner — the chunks section below already has all the content.
+      const isRateLimit = data.answer.includes('429') ||
+        (data.diagnostics.hyde_ms > 500 && data.diagnostics.knn_hits === 0);
+      const bannerMsg = isRateLimit
+        ? '<b>watsonx.ai rate limit (HTTP 429)</b> — too many requests per minute. Wait 60 seconds and retry.'
+        : '<b>watsonx.ai quota exhausted (HTTP 403)</b> — monthly token quota reached. Quota resets monthly on your IBM Cloud account.';
       html += `<div style="
         background:var(--warn-bg);border:1px solid #fde68a;border-radius:var(--radius);
         padding:10px 14px;font-size:13px;color:var(--warn);display:flex;gap:8px;align-items:flex-start">
         <span style="flex-shrink:0">⚠</span>
-        <span><b>watsonx.ai quota exhausted</b> — LLM synthesis unavailable.
-        Retrieval is fully functional; the top matching source chunks are shown below.
-        Quota resets monthly on your IBM Cloud account.</span>
+        <span>${bannerMsg}
+        Retrieval is fully functional; the top matching source chunks are shown below.</span>
       </div>`;
     } else if (noResults) {
       html += `<div style="

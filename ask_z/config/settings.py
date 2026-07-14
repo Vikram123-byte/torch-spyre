@@ -137,12 +137,23 @@ class BobAPISettings:
 
 
 @dataclass(frozen=True)
+class GroqSettings:
+    # Groq API — free tier, used as fallback when watsonx.ai quota is exhausted.
+    # Get a free key at: https://console.groq.com/keys
+    api_key: str | None = field(default_factory=lambda: os.environ.get("GROQ_API_KEY"))
+    model: str = field(
+        default_factory=lambda: os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+    )
+
+
+@dataclass(frozen=True)
 class Settings:
     elasticsearch: ElasticsearchSettings = field(default_factory=ElasticsearchSettings)
     embedding: EmbeddingSettings = field(default_factory=EmbeddingSettings)
     retrieval: RetrievalSettings = field(default_factory=RetrievalSettings)
     watsonx: WatsonxSettings = field(default_factory=WatsonxSettings)
     bob: BobAPISettings = field(default_factory=BobAPISettings)
+    groq: GroqSettings = field(default_factory=GroqSettings)
 
 
 # Module-level singleton — import this everywhere.

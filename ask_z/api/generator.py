@@ -1,20 +1,12 @@
 """
 ask_z/api/generator.py
 ───────────────────────
-IBM Granite generation layer with structured context assembly and strict citation enforcement.
+Answer generation with automatic fallback chain:
+  1. IBM Granite via watsonx.ai  (primary — best quality, grounded citations)
+  2. Groq Llama-3 via Groq API   (fallback — free, fast, when watsonx quota exhausted)
 
-This module wraps the watsonx.ai text/chat endpoint (not a separate "Bob API" —
-Bob is the internal IBM name for Granite-based assistants accessible via watsonx.ai).
-
-Design
-───────
-• Each retrieved chunk's metadata is prepended to its text as a structured citation block.
-• The system prompt instructs the model to:
-    - Only answer using facts from the provided context
-    - Cite sources inline using the [Source: ...] references
-    - Flag low confidence or missing information explicitly
-    - Generate code stubs when the question is implementation-focused
-• Returns the generated answer as plain text with inline citations.
+The same system prompt and context format is used for both backends so the
+answer quality and citation style are consistent.
 """
 
 from __future__ import annotations
@@ -71,16 +63,27 @@ def _assemble_context(chunks: list[ContextChunk]) -> str:
 
     lines: list[str] = []
     for i, chunk in enumerate(chunks, start=1):
+        # Use just the filename for external docs; keep full path for repo files.
+        source_label = (
+            chunk.source_url
+            if (
+                chunk.doc_type == "external_doc"
+                and chunk.source_url
+                and chunk.source_url != chunk.file_path
+            )
+            else chunk.file_path.split("/")[-1]
+            if chunk.doc_type == "external_doc"
+            else chunk.file_path
+        )
         meta = (
-            f"[Source: {chunk.file_path}, "
+            f"[Source: {source_label}, "
             f"Component: {chunk.component_tag}, "
-            f"Last Updated: {chunk.last_updated}, "
-            f"Version: {chunk.version}]"
+            f"Slide/Chunk: {chunk.chunk_index + 1}]"
         )
         lines.append(f"--- Chunk {i} ---")
         lines.append(meta)
         lines.append(chunk.text)
-        lines.append("")  # blank line between chunks
+        lines.append("")
 
     return "\n".join(lines).strip()
 
@@ -117,61 +120,16 @@ async def _get_iam_token(client: httpx.AsyncClient) -> str:
 # ── Generation ────────────────────────────────────────────────────────────────
 
 
-async def generate_grounded_answer(
+async def _generate_via_watsonx(
     user_query: str,
-    top_chunks: list[ContextChunk],
+    context_block: str,
     http_client: httpx.AsyncClient,
 ) -> str:
-    """
-    Generate a grounded answer using IBM Granite via watsonx.ai text/chat.
-
-    Parameters
-    ----------
-    user_query:
-        The original user question (after HyDE, retrieval, and reranking).
-    top_chunks:
-        The top-k reranked context chunks with full metadata.
-    http_client:
-        Shared async HTTP client (passed from the FastAPI app lifespan).
-
-    Returns
-    -------
-    str
-        The generated answer text with inline [Source: ...] citations.
-
-    Raises
-    ------
-    httpx.HTTPStatusError:
-        If the watsonx.ai API returns an error status.
-    httpx.TimeoutException:
-        If the generation call exceeds the configured timeout.
-    ValueError:
-        If top_chunks is empty (the caller should handle this before calling).
-    """
-    if not top_chunks:
-        raise ValueError(
-            "Cannot generate answer with empty context. "
-            "Ensure at least one chunk passed the rerank threshold."
-        )
-
-    context_block = _assemble_context(top_chunks)
-    log.debug(
-        "Assembled context: %d chars from %d chunks.",
-        len(context_block),
-        len(top_chunks),
-    )
-
-    # ── Prepare the payload ────────────────────────────────────────────────
+    """Call watsonx.ai text/chat endpoint."""
     bearer = await _get_iam_token(http_client)
-    base_url = settings.watsonx.api_base_url
-    api_version = settings.watsonx.api_version
-    project_id = settings.watsonx.project_id
-
-    generation_model = settings.watsonx.generation_model
-
     payload = {
-        "model_id": generation_model,
-        "project_id": project_id,
+        "model_id": settings.watsonx.generation_model,
+        "project_id": settings.watsonx.project_id,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {
@@ -179,7 +137,7 @@ async def generate_grounded_answer(
                 "content": (
                     f"**Context:**\n{context_block}\n\n"
                     f"**Question:** {user_query}\n\n"
-                    f"Provide a grounded answer with inline source citations."
+                    "Provide a grounded answer with inline source citations."
                 ),
             },
         ],
@@ -188,14 +146,10 @@ async def generate_grounded_answer(
             "max_new_tokens": 512,
             "repetition_penalty": 1.1,
             "stop_sequences": [],
-            "temperature": 0.0,  # deterministic for repeatability
+            "temperature": 0.0,
         },
     }
-
-    # ── Call watsonx.ai ─────────────────────────────────────────────────────
-    url = f"{base_url}/text/chat?version={api_version}"
-    log.debug("Calling %s with model %s …", url, generation_model)
-
+    url = f"{settings.watsonx.api_base_url}/text/chat?version={settings.watsonx.api_version}"
     resp = await http_client.post(
         url,
         json=payload,
@@ -206,15 +160,87 @@ async def generate_grounded_answer(
         timeout=float(settings.bob.timeout_seconds),
     )
     resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
 
-    data = resp.json()
-    answer_text: str = data["choices"][0]["message"]["content"].strip()
 
+async def _generate_via_groq(user_query: str, context_block: str) -> str:
+    """Call Groq API using the groq SDK (async). Used as fallback."""
+    import asyncio
+    from groq import Groq
+
+    client = Groq(api_key=settings.groq.api_key)
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"**Context:**\n{context_block}\n\n"
+                f"**Question:** {user_query}\n\n"
+                "Provide a grounded answer with inline source citations."
+            ),
+        },
+    ]
+
+    # Groq SDK is sync — run in thread pool to avoid blocking the event loop.
+    def _call():
+        completion = client.chat.completions.create(
+            model=settings.groq.model,
+            messages=messages,
+            temperature=0.0,
+            max_tokens=1024,
+        )
+        return completion.choices[0].message.content.strip()
+
+    return await asyncio.to_thread(_call)
+
+
+async def generate_grounded_answer(
+    user_query: str,
+    top_chunks: list[ContextChunk],
+    http_client: httpx.AsyncClient,
+) -> str:
+    """
+    Generate a grounded answer from retrieved context chunks.
+
+    Tries watsonx.ai (IBM Granite) first. On HTTP 403/429 quota errors,
+    automatically falls back to Groq (Llama-3) if GROQ_API_KEY is set.
+    """
+    if not top_chunks:
+        raise ValueError("Cannot generate answer with empty context.")
+
+    context_block = _assemble_context(top_chunks)
+    log.debug("Context: %d chars from %d chunks.", len(context_block), len(top_chunks))
+
+    # ── Try watsonx.ai first ───────────────────────────────────────────────
+    try:
+        answer = await _generate_via_watsonx(user_query, context_block, http_client)
+        log.info(
+            "Answer via watsonx.ai: %d chars | model=%s | chunks=%d",
+            len(answer),
+            settings.watsonx.generation_model,
+            len(top_chunks),
+        )
+        return answer
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code not in (403, 429):
+            raise
+        log.warning(
+            "watsonx.ai quota/rate-limit (HTTP %s) — falling back to Groq.",
+            exc.response.status_code,
+        )
+
+    # ── Fallback: Groq ─────────────────────────────────────────────────────
+    if not settings.groq.api_key:
+        raise RuntimeError(
+            "watsonx.ai quota exhausted and GROQ_API_KEY is not set. "
+            "Add GROQ_API_KEY to ask_z/.env to enable the Groq fallback."
+        )
+
+    answer = await _generate_via_groq(user_query, context_block)
     log.info(
-        "Generated answer: %d chars | model=%s | chunks=%d",
-        len(answer_text),
-        generation_model,
+        "Answer via Groq (%s): %d chars | chunks=%d",
+        settings.groq.model,
+        len(answer),
         len(top_chunks),
     )
-
-    return answer_text
+    return answer

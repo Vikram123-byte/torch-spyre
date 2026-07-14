@@ -345,9 +345,9 @@ def _build_context_chunk(
 
 
 def _is_quota_error(exc: Exception) -> bool:
-    """Return True when *exc* is a watsonx.ai 403 token_quota_reached error."""
+    """Return True when *exc* is a watsonx.ai 403 quota or 429 rate-limit error."""
     if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code == 403
+        return exc.response.status_code in (403, 429)
     return False
 
 
@@ -377,8 +377,6 @@ async def execute_pipeline(
     """
     t_start = time.perf_counter()
     index = settings.elasticsearch.index_name
-    quota_exhausted = False
-
     # ── Stage 1: HyDE (with quota fallback) ──────────────────────────────────
     t_hyde_start = time.perf_counter()
     hypothesis: str = ""
@@ -388,11 +386,10 @@ async def execute_pipeline(
     except Exception as exc:
         if _is_quota_error(exc):
             log.warning(
-                "watsonx.ai quota exhausted — falling back to BM25-only search "
-                "(no HyDE, no KNN, no LLM answer)."
+                "watsonx.ai quota/rate-limit — falling back to BM25-only search. "
+                "Groq will be used for answer generation."
             )
-            quota_exhausted = True
-            hypothesis = "[HyDE skipped — watsonx.ai quota exhausted]"
+            hypothesis = "[HyDE skipped — watsonx.ai quota/rate-limit]"
         else:
             raise
     hyde_ms = (time.perf_counter() - t_hyde_start) * 1000
@@ -441,7 +438,8 @@ async def execute_pipeline(
         total_ms=round(total_ms, 1),
     )
 
-    # ── Stage 6: Grounded answer generation (with quota fallback) ────────────
+    # ── Stage 6: Answer generation ────────────────────────────────────────────
+    # generate_grounded_answer handles the watsonx→Groq fallback internally.
     from ask_z.api.generator import generate_grounded_answer
 
     if not chunks:
@@ -449,31 +447,7 @@ async def execute_pipeline(
             "⚠ No relevant context found after reranking. "
             "The knowledge base may not contain information about this topic yet."
         )
-    elif quota_exhausted:
-        # LLM generation not available — return a plain summary of the top chunks.
-        answer = (
-            "⚠ watsonx.ai quota exhausted — LLM answer generation unavailable. "
-            "Top matching chunks are returned below for manual review.\n\n"
-            + "\n\n---\n\n".join(
-                f"[{c.rank}] {c.file_path}\n{c.text[:500]}" for c in chunks
-            )
-        )
     else:
-        try:
-            answer = await generate_grounded_answer(query, chunks, http_client)
-        except Exception as exc:
-            if _is_quota_error(exc):
-                log.warning(
-                    "watsonx.ai quota exhausted during answer generation — returning raw chunks."
-                )
-                answer = (
-                    "⚠ watsonx.ai quota exhausted — LLM answer generation unavailable. "
-                    "Top matching chunks are returned below for manual review.\n\n"
-                    + "\n\n---\n\n".join(
-                        f"[{c.rank}] {c.file_path}\n{c.text[:500]}" for c in chunks
-                    )
-                )
-            else:
-                raise
+        answer = await generate_grounded_answer(query, chunks, http_client)
 
     return hypothesis, answer, chunks, diagnostics

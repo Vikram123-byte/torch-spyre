@@ -119,10 +119,19 @@ def ingest_docs(chunks: list[dict], es: Elasticsearch, index: str) -> None:
         log.info("Index is already up to date.")
         return
 
+    # ── Try embedding; fall back to BM25-only upsert on quota exhaustion ─────
+    # A list of (chunk, vector_or_None) — None means no vector available yet.
+    results: list[tuple[dict, list[float] | None]] = []
+    quota_exhausted = False
     batch_size = 10
-    embedded: list[tuple[dict, list[float]]] = []
 
     for i in range(0, len(to_embed), batch_size):
+        if quota_exhausted:
+            # No point calling the API again — mark remaining without vectors.
+            for chunk in to_embed[i : i + batch_size]:
+                results.append((chunk, None))
+            continue
+
         batch = to_embed[i : i + batch_size]
         texts = [_truncate(c["text"]) for c in batch]
         log.info("Embedding batch %d–%d / %d …", i + 1, i + len(batch), len(to_embed))
@@ -136,32 +145,65 @@ def ingest_docs(chunks: list[dict], es: Elasticsearch, index: str) -> None:
                 model_id=model_id,
             )
             for chunk, vec in zip(batch, vectors):
-                embedded.append((chunk, vec))
+                results.append((chunk, vec))
         except Exception as exc:
-            log.error("Embedding batch %d failed: %s — skipping batch.", i, exc)
+            if "403" in str(exc) or "quota" in str(exc).lower():
+                log.warning(
+                    "watsonx.ai quota exhausted — switching to BM25-only mode. "
+                    "Chunks will be stored as text-only (no vector). "
+                    "Re-run ingest_docs after quota resets to add embeddings."
+                )
+                quota_exhausted = True
+                for chunk in batch:
+                    results.append((chunk, None))
+            else:
+                log.error("Embedding batch %d failed: %s — skipping batch.", i, exc)
 
-    def _actions():
-        for chunk, vector in embedded:
-            meta = chunk["metadata"]
-            if meta.get("last_updated") == "unknown":
-                meta.pop("last_updated")
-            yield {
-                "_op_type": "index",
-                "_index": index,
-                "_id": meta["content_hash"],
-                "_source": {
-                    "text": chunk["text"],
-                    "vector": vector,
-                    **{k: v for k, v in meta.items() if k != "content_hash"},
-                    "content_hash": meta["content_hash"],
-                },
-            }
+    # Split into embedded vs text-only.
+    embedded = [(c, v) for c, v in results if v is not None]
+    text_only = [c for c, v in results if v is None]
 
-    actions = list(_actions())
+    log.info(
+        "Embedded: %d | BM25-only (no vector): %d",
+        len(embedded),
+        len(text_only),
+    )
+
+    def _make_action(chunk: dict, vector: list[float] | None) -> dict:
+        meta = chunk["metadata"]
+        if meta.get("last_updated") == "unknown":
+            meta.pop("last_updated", None)
+        source: dict = {
+            "text": chunk["text"],
+            **{k: v for k, v in meta.items() if k != "content_hash"},
+            "content_hash": meta["content_hash"],
+        }
+        # Only include the vector field when we actually have one —
+        # ES will accept the doc without it for BM25-only search.
+        if vector is not None:
+            source["vector"] = vector
+        return {
+            "_op_type": "index",
+            "_index": index,
+            "_id": meta["content_hash"],
+            "_source": source,
+        }
+
+    actions = [_make_action(c, v) for c, v in embedded] + [
+        _make_action(c, None) for c in text_only
+    ]
+
     log.info("Upserting %d chunks into '%s' …", len(actions), index)
     success, errors = helpers.bulk(es, actions, raise_on_error=False, stats_only=False)
     failed = [e for e in (errors or []) if e]
-    log.info("Upsert complete: %d succeeded, %d failed.", success, len(failed))
+    log.info(
+        "Upsert complete: %d succeeded, %d failed.%s",
+        success,
+        len(failed),
+        " (BM25-only — re-run after quota resets to add vectors)"
+        if quota_exhausted
+        else "",
+    )
     for err in failed[:3]:
         log.error("Bulk error: %s", err)
 
