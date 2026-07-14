@@ -4,11 +4,20 @@ ask_z/scripts/ingest_box.py
 Ingest documents directly from IBM Box folders into the ask-z-knowledge
 Elasticsearch index — no manual downloads required.
 
-Works with IBM Enterprise Box (ibm.ent.box.com) and standard Box (box.com).
+Works with IBM Enterprise Box (ibm.ent.box.com).
 
-Authentication options (pick ONE — set the matching .env vars):
-  1. Developer Token  — quickest for local dev/testing (expires in 1 h)
-  2. OAuth2 JWT app   — long-lived, needed for scheduled/automated ingestion
+Authentication — IBM Enterprise Box offers three methods (pick ONE):
+
+  1. Client Credentials Grant (CCG) — RECOMMENDED for IBM Enterprise Box
+     Simple client_id + client_secret. No keypair, no expiry.
+     ⚠ The CCG Service Account needs to be granted access to your folders.
+     See ask_z/.env.example SECTION 5 for the exact steps.
+
+  2. JWT — keypair auth for strict enterprise security policies.
+
+  3. Developer Token — quickest for one-off testing (expires in 1 h).
+     ⚠ IBM Enterprise Box redirects developer.box.com to ibm.ent.box.com/developers/console
+     which does NOT show the "Developer Token" tab — use CCG instead.
 
 Supported file types:  .pdf  .pptx  .docx  .txt  .md  .rst
 Skipped automatically: .mp4  .mov  .zip  .png  .jpg  and all other non-text
@@ -27,15 +36,10 @@ Usage
       --tag ibm_z_hardware \\
       --recursive
 
-Required .env variables (at least one auth method must be set):
-
-  BOX_DEVELOPER_TOKEN=your_dev_token   # expires in 1 h — get from developer.box.com
-  # ── OR ──
-  BOX_CLIENT_ID=...
-  BOX_CLIENT_SECRET=...
-  BOX_JWT_KEY_ID=...
-  BOX_RSA_PRIVATE_KEY_PATH=/path/to/private_key.pem
-  BOX_ENTERPRISE_ID=...
+Required .env variables — CCG (recommended):
+  BOX_CLIENT_ID=your_client_id
+  BOX_CLIENT_SECRET=your_client_secret
+  BOX_ENTERPRISE_ID=your_enterprise_id   # visible in Admin Console → Account & Billing
 """
 
 from __future__ import annotations
@@ -74,7 +78,10 @@ def _build_box_client() -> Any:
     """
     Build a Box SDK client from environment variables.
 
-    Tries Developer Token first (simplest), then JWT app credentials.
+    Priority order:
+      1. CCG  — BOX_CLIENT_ID + BOX_CLIENT_SECRET + BOX_ENTERPRISE_ID
+      2. JWT  — CCG vars + BOX_JWT_KEY_ID + BOX_RSA_PRIVATE_KEY_PATH
+      3. Dev token — BOX_DEVELOPER_TOKEN (expires 1 h, limited on IBM ent.)
     """
     try:
         import boxsdk
@@ -82,25 +89,39 @@ def _build_box_client() -> Any:
         log.error("boxsdk is not installed. Run:  pip install 'boxsdk>=3.9.0,<4.0.0'")
         sys.exit(1)
 
-    dev_token = os.environ.get("BOX_DEVELOPER_TOKEN")
-    if dev_token:
-        log.info("Authenticating with Box Developer Token.")
-        return boxsdk.Client(
-            boxsdk.OAuth2(
-                client_id="",
-                client_secret="",
-                access_token=dev_token,
-            )
-        )
-
     client_id = os.environ.get("BOX_CLIENT_ID")
     client_secret = os.environ.get("BOX_CLIENT_SECRET")
-    jwt_key_id = os.environ.get("BOX_JWT_KEY_ID")
-    rsa_key_path = os.environ.get("BOX_RSA_PRIVATE_KEY_PATH")
     enterprise_id = os.environ.get("BOX_ENTERPRISE_ID")
 
+    # ── Method 1: Client Credentials Grant (CCG) ──────────────────────────────
+    # Recommended for IBM Enterprise Box. Just client_id + client_secret + enterprise_id.
+    # The CCG app authenticates as a Service Account — you must share your Box folders
+    # with the Service Account email (shown in the app's General Settings on the dev console).
+    jwt_key_id = os.environ.get("BOX_JWT_KEY_ID")
+    rsa_key_path = os.environ.get("BOX_RSA_PRIVATE_KEY_PATH")
+
+    if (
+        client_id
+        and client_secret
+        and enterprise_id
+        and not (jwt_key_id or rsa_key_path)
+    ):
+        log.info("Authenticating via Client Credentials Grant (CCG).")
+        try:
+            auth = boxsdk.CCGAuth(
+                client_id=client_id,
+                client_secret=client_secret,
+                enterprise_id=enterprise_id,
+            )
+            return boxsdk.Client(auth)
+        except AttributeError:
+            # Older boxsdk versions expose CCG differently — fall through to manual token fetch.
+            log.debug("boxsdk.CCGAuth not available — using manual CCG token exchange.")
+            return _build_ccg_client_manual(client_id, client_secret, enterprise_id)
+
+    # ── Method 2: JWT ──────────────────────────────────────────────────────────
     if all([client_id, client_secret, jwt_key_id, rsa_key_path, enterprise_id]):
-        log.info("Authenticating with Box JWT app credentials.")
+        log.info("Authenticating via JWT.")
         rsa_key = Path(rsa_key_path).read_text()  # type: ignore[arg-type]
         passphrase = os.environ.get("BOX_RSA_PRIVATE_KEY_PASSPHRASE")
         auth = boxsdk.JWTAuth(
@@ -113,18 +134,97 @@ def _build_box_client() -> Any:
         )
         return boxsdk.Client(auth)
 
+    # ── Method 3: Developer Token (fallback) ──────────────────────────────────
+    dev_token = os.environ.get("BOX_DEVELOPER_TOKEN")
+    if dev_token:
+        log.info("Authenticating with Box Developer Token.")
+        return boxsdk.Client(
+            boxsdk.OAuth2(
+                client_id="",
+                client_secret="",
+                access_token=dev_token,
+            )
+        )
+
     log.error(
-        "No Box credentials found. Set one of:\n"
-        "  BOX_DEVELOPER_TOKEN           (quickest, expires 1 h)\n"
-        "  BOX_CLIENT_ID + BOX_CLIENT_SECRET + BOX_JWT_KEY_ID +\n"
-        "    BOX_RSA_PRIVATE_KEY_PATH + BOX_ENTERPRISE_ID  (long-lived)\n\n"
-        "How to get a Developer Token:\n"
-        "  1. Go to https://developer.box.com/ — sign in with your IBM Box account\n"
-        "  2. My Apps → Create New App → Custom App → User Authentication (OAuth 2.0)\n"
-        "  3. Open the app → Configuration → Developer Token → Generate\n"
-        "  4. Paste the token into BOX_DEVELOPER_TOKEN= in ask_z/.env"
+        "No Box credentials found in environment.\n\n"
+        "For IBM Enterprise Box (ibm.ent.box.com) use Client Credentials Grant:\n"
+        "  Step 1 — Create the app:\n"
+        "    ibm.ent.box.com/developers/console → New App\n"
+        "    App Name: ask-z-ingest\n"
+        "    App Type: Server  |  Method: Client Credentials Grant → Create\n\n"
+        "  Step 2 — Copy credentials to ask_z/.env:\n"
+        "    BOX_CLIENT_ID=<Client ID from Configuration tab>\n"
+        "    BOX_CLIENT_SECRET=<Client Secret from Configuration tab>\n"
+        "    BOX_ENTERPRISE_ID=<from Admin Console → Account & Billing → Enterprise ID>\n\n"
+        "  Step 3 — Grant the app access to your folders:\n"
+        "    In the app's Configuration tab, find the Service Account email\n"
+        "    (looks like AutomationUser_12345@boxdevedition.com)\n"
+        "    Go to each Box folder → Share → invite that email as Viewer\n\n"
+        "  Step 4 — Ask your Box Admin to authorize the app:\n"
+        "    Admin Console → Apps → Custom Apps Manager → Authorize New App\n"
+        "    Paste the Client ID and authorize\n"
     )
     sys.exit(1)
+
+
+def _build_ccg_client_manual(
+    client_id: str, client_secret: str, enterprise_id: str
+) -> Any:
+    """
+    Manual CCG token exchange for older boxsdk versions that lack boxsdk.CCGAuth.
+
+    POSTs to the Box OAuth2 token endpoint with grant_type=client_credentials,
+    then wraps the resulting access token in a standard OAuth2 client.
+    """
+    import urllib.request
+    import urllib.parse
+    import json
+
+    import boxsdk
+
+    data = urllib.parse.urlencode(
+        {
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "box_subject_type": "enterprise",
+            "box_subject_id": enterprise_id,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        "https://api.box.com/oauth2/token",
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            token_data = json.loads(resp.read())
+    except Exception as exc:
+        log.error("CCG token exchange failed: %s", exc)
+        log.error(
+            "Common causes:\n"
+            "  • App not yet authorized by Box Admin (Admin Console → Custom Apps Manager)\n"
+            "  • Wrong BOX_ENTERPRISE_ID — check Admin Console → Account & Billing\n"
+            "  • BOX_CLIENT_ID or BOX_CLIENT_SECRET is incorrect"
+        )
+        sys.exit(1)
+
+    access_token = token_data.get("access_token")
+    if not access_token:
+        log.error("CCG token response missing access_token: %s", token_data)
+        sys.exit(1)
+
+    log.info(
+        "CCG token obtained (manual exchange). Expires in %ds.",
+        token_data.get("expires_in", 3600),
+    )
+    return boxsdk.Client(
+        boxsdk.OAuth2(
+            client_id=client_id, client_secret=client_secret, access_token=access_token
+        )
+    )
 
 
 # ── Box folder resolution ──────────────────────────────────────────────────────
