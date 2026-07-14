@@ -42,3 +42,7 @@ python-docx>=1.1.0                # Word document extraction
 
 # ── LLM fallback (Groq — Llama-3, free tier, used when watsonx quota exhausted) ──
 groq>=0.9.0
+
+# ── IBM Box SDK (direct folder ingestion — ingest_box.py) ────────────────────
+# v3.x is the stable SDK; v10.x is next-gen (different auth API, not yet widely adopted).
+boxsdk>=3.9.0,<4.0.0
