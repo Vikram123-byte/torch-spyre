@@ -43,6 +43,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import regex as re
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
@@ -444,6 +445,12 @@ def chunk_document(
     return chunks
 
 
+# Box folder URL pattern — /folder/<numeric_id> — appending a filename to
+# this path produces a 404.  When this prefix is detected, use it as-is so
+# every file in the directory links back to the Box folder root.
+_BOX_FOLDER_URL_RE = re.compile(r"^https?://[^/]*box\.com/folder/\d+", re.IGNORECASE)
+
+
 def chunk_directory(
     directory: Path | str,
     *,
@@ -452,11 +459,30 @@ def chunk_directory(
     extensions: set[str] | None = None,
     exclude_patterns: list[str] | None = None,
 ) -> Iterator[dict]:
-    """Walk *directory* recursively and yield chunk dicts for every supported file."""
+    """Walk *directory* recursively and yield chunk dicts for every supported file.
+
+    When ``source_url_prefix`` is a Box folder URL
+    (``https://*.box.com/folder/<id>``), it is used as-is for every file
+    rather than appended with the relative path — Box folder-path URLs are
+    always 404; the correct per-file URL requires the Box file ID which is
+    only available through the Box API (use ``ingest_box.py`` for that).
+    """
     if extensions is None:
         extensions = {".pdf", ".pptx", ".docx", ".txt", ".md", ".rst"}
     if exclude_patterns is None:
         exclude_patterns = ["__pycache__", ".git", ".venv", "node_modules"]
+
+    # Detect Box folder URL prefix — do not append filenames to it.
+    box_folder_prefix = bool(
+        source_url_prefix and _BOX_FOLDER_URL_RE.match(source_url_prefix)
+    )
+    if box_folder_prefix:
+        log.warning(
+            "source_url_prefix looks like a Box folder URL (%s). "
+            "Filenames will NOT be appended — every chunk will link to the folder root. "
+            "Use ingest_box.py to get per-file /file/<id> URLs.",
+            source_url_prefix,
+        )
 
     directory = Path(directory).resolve()
 
@@ -474,7 +500,12 @@ def chunk_directory(
             if any(pat in str(fpath) for pat in exclude_patterns):
                 continue
             rel = fpath.relative_to(directory)
-            url = f"{source_url_prefix}/{rel}" if source_url_prefix else str(fpath)
+            if box_folder_prefix:
+                url = source_url_prefix  # folder root — always openable
+            elif source_url_prefix:
+                url = f"{source_url_prefix}/{rel}"
+            else:
+                url = str(fpath)
             yield from chunk_document(
                 fpath, component_tag=component_tag, source_url=url
             )

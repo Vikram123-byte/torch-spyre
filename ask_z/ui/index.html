@@ -824,13 +824,26 @@ function isCode(c) {
   return c.doc_type === 'code' || c.file_path.endsWith('.py');
 }
 
+function isBoxFolderUrl(url) {
+  return /^https?:\/\/[^/]*box\.com\/folder\/\d+\/?$/.test(url);
+}
+
 function renderChunk(c, idx) {
-  const displayPath = c.doc_type === 'external_doc'
-    ? c.file_path.split('/').pop()
-    : c.file_path;
-  const pathHtml = (c.source_url && c.source_url !== c.file_path)
-    ? `<a href="${esc(c.source_url)}" target="_blank" title="${esc(c.source_url)}">${esc(displayPath)} ↗</a>`
-    : `<span>${esc(displayPath)}</span>`;
+  const filename = c.file_path.split('/').pop();
+  const displayPath = c.doc_type === 'external_doc' ? filename : c.file_path;
+  let pathHtml;
+  if (c.source_url && c.source_url !== c.file_path) {
+    // Box folder URL — label shows filename, tooltip explains it opens the folder
+    const tooltip = isBoxFolderUrl(c.source_url)
+      ? `Open IBM Box folder containing "${esc(filename)}"`
+      : esc(c.source_url);
+    const label = isBoxFolderUrl(c.source_url)
+      ? `${esc(displayPath)} 📁`
+      : `${esc(displayPath)} ↗`;
+    pathHtml = `<a href="${esc(c.source_url)}" target="_blank" title="${tooltip}">${label}</a>`;
+  } else {
+    pathHtml = `<span>${esc(displayPath)}</span>`;
+  }
   const body = isCode(c)
     ? `<pre>${esc(c.text)}</pre>`
     : `<p>${esc(c.text)}</p>`;
