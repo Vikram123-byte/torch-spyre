@@ -372,7 +372,7 @@ async def execute_pipeline(
       HyDE → hybrid BM25+KNN → RRF → rerank → generate.
     """
     from ask_z.api.github_tools import detect_pr_query, fetch_pr_context
-    from ask_z.api.generator import generate_grounded_answer
+    from ask_z.api.generator import generate_grounded_answer, generate_pr_summary
 
     t_start = time.perf_counter()
 
@@ -419,7 +419,7 @@ async def execute_pipeline(
             content_hash=hashlib.md5(pr_data["context_text"].encode()).hexdigest(),
         )
 
-        answer = await generate_grounded_answer(query, [pr_chunk], http_client)
+        answer = await generate_pr_summary(pr_data["context_text"], query, http_client)
         total_ms = round((time.perf_counter() - t_start) * 1000, 1)
         pr_diag = PipelineDiagnostics(
             hyde_ms=0,

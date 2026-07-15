@@ -21,7 +21,7 @@ from ask_z.config.settings import settings
 
 log = logging.getLogger("ask_z.api.generator")
 
-# ── System prompt ─────────────────────────────────────────────────────────────
+# ── System prompts ────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """\
 You are an IBM Z and Spyre engineering documentation assistant. Your role is to \
@@ -42,6 +42,34 @@ provided in each request.
 • Plain-English explanation with inline [Source: ...] citations.
 • If code is relevant, include a fenced ```python block.
 • Flag uncertainty explicitly at the end if confidence is low.
+"""
+
+_PR_SYSTEM_PROMPT = """\
+You are a helpful code review assistant. You will be given the full details of a \
+GitHub Pull Request — title, description, changed files, review status, and comments.
+
+Your job is to produce a clear, structured summary of the PR. Always use the \
+actual data provided. Never say the information is missing or unavailable.
+
+**Output format (use these exact sections):**
+
+## PR Summary
+One or two sentences describing what this PR does.
+
+## Changes
+Bullet list of the key changes — what files/areas were modified and why.
+
+## Review Status
+Who has reviewed it and what their verdict is (Approved / Changes Requested / Pending).
+
+## Notable Comments
+Any important discussion points from the comments (skip if none).
+
+## Quick Take
+One sentence: is this ready to merge, needs work, or is it a draft?
+
+Be direct and factual. Do not add disclaimers or say "I cannot find" anything — \
+all the information you need is in the PR data block provided.
 """
 
 # ── Context assembly ──────────────────────────────────────────────────────────
@@ -120,105 +148,54 @@ async def _get_iam_token(client: httpx.AsyncClient) -> str:
 # ── Generation ────────────────────────────────────────────────────────────────
 
 
-async def _generate_via_watsonx(
-    user_query: str,
-    context_block: str,
+async def _call_llm(
+    system_prompt: str,
+    user_message: str,
     http_client: httpx.AsyncClient,
-) -> str:
-    """Call watsonx.ai text/chat endpoint."""
-    bearer = await _get_iam_token(http_client)
-    payload = {
-        "model_id": settings.watsonx.generation_model,
-        "project_id": settings.watsonx.project_id,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"**Context:**\n{context_block}\n\n"
-                    f"**Question:** {user_query}\n\n"
-                    "Provide a grounded answer with inline source citations."
-                ),
-            },
-        ],
-        "parameters": {
-            "decoding_method": "greedy",
-            "max_new_tokens": 512,
-            "repetition_penalty": 1.1,
-            "stop_sequences": [],
-            "temperature": 0.0,
-        },
-    }
-    url = f"{settings.watsonx.api_base_url}/text/chat?version={settings.watsonx.api_version}"
-    resp = await http_client.post(
-        url,
-        json=payload,
-        headers={
-            "Authorization": f"Bearer {bearer}",
-            "Content-Type": "application/json",
-        },
-        timeout=float(settings.bob.timeout_seconds),
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
-
-
-async def _generate_via_groq(user_query: str, context_block: str) -> str:
-    """Call Groq API using the groq SDK (async). Used as fallback."""
-    import asyncio
-    from groq import Groq
-
-    client = Groq(api_key=settings.groq.api_key)
-    messages = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"**Context:**\n{context_block}\n\n"
-                f"**Question:** {user_query}\n\n"
-                "Provide a grounded answer with inline source citations."
-            ),
-        },
-    ]
-
-    # Groq SDK is sync — run in thread pool to avoid blocking the event loop.
-    def _call():
-        completion = client.chat.completions.create(
-            model=settings.groq.model,
-            messages=messages,
-            temperature=0.0,
-            max_tokens=1024,
-        )
-        return completion.choices[0].message.content.strip()
-
-    return await asyncio.to_thread(_call)
-
-
-async def generate_grounded_answer(
-    user_query: str,
-    top_chunks: list[ContextChunk],
-    http_client: httpx.AsyncClient,
+    *,
+    max_tokens: int = 1024,
 ) -> str:
     """
-    Generate a grounded answer from retrieved context chunks.
+    Call watsonx.ai (IBM Granite) with the given system + user message.
+    Falls back to Groq on HTTP 403/429 quota errors.
 
-    Tries watsonx.ai (IBM Granite) first. On HTTP 403/429 quota errors,
-    automatically falls back to Groq (Llama-3) if GROQ_API_KEY is set.
+    This is the single LLM entry point — both RAG answers and PR summaries
+    go through here, each with their own system prompt.
     """
-    if not top_chunks:
-        raise ValueError("Cannot generate answer with empty context.")
-
-    context_block = _assemble_context(top_chunks)
-    log.debug("Context: %d chars from %d chunks.", len(context_block), len(top_chunks))
-
-    # ── Try watsonx.ai first ───────────────────────────────────────────────
+    # ── watsonx.ai (primary) ──────────────────────────────────────────────
     try:
-        answer = await _generate_via_watsonx(user_query, context_block, http_client)
+        bearer = await _get_iam_token(http_client)
+        payload = {
+            "model_id": settings.watsonx.generation_model,
+            "project_id": settings.watsonx.project_id,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "parameters": {
+                "decoding_method": "greedy",
+                "max_new_tokens": max_tokens,
+                "repetition_penalty": 1.1,
+                "stop_sequences": [],
+                "temperature": 0.0,
+            },
+        }
+        url = f"{settings.watsonx.api_base_url}/text/chat?version={settings.watsonx.api_version}"
+        resp = await http_client.post(
+            url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {bearer}",
+                "Content-Type": "application/json",
+            },
+            timeout=float(settings.bob.timeout_seconds),
+        )
+        resp.raise_for_status()
+        answer = resp.json()["choices"][0]["message"]["content"].strip()
         log.info(
-            "Answer via watsonx.ai: %d chars | model=%s | chunks=%d",
+            "Answer via watsonx.ai: %d chars | model=%s",
             len(answer),
             settings.watsonx.generation_model,
-            len(top_chunks),
         )
         return answer
     except httpx.HTTPStatusError as exc:
@@ -229,18 +206,61 @@ async def generate_grounded_answer(
             exc.response.status_code,
         )
 
-    # ── Fallback: Groq ─────────────────────────────────────────────────────
+    # ── Groq fallback ─────────────────────────────────────────────────────
     if not settings.groq.api_key:
         raise RuntimeError(
             "watsonx.ai quota exhausted and GROQ_API_KEY is not set. "
             "Add GROQ_API_KEY to ask_z/.env to enable the Groq fallback."
         )
 
-    answer = await _generate_via_groq(user_query, context_block)
-    log.info(
-        "Answer via Groq (%s): %d chars | chunks=%d",
-        settings.groq.model,
-        len(answer),
-        len(top_chunks),
-    )
+    import asyncio
+    from groq import Groq
+
+    client = Groq(api_key=settings.groq.api_key)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ]
+
+    def _groq_call():
+        completion = client.chat.completions.create(
+            model=settings.groq.model,
+            messages=messages,
+            temperature=0.0,
+            max_tokens=max_tokens,
+        )
+        return completion.choices[0].message.content.strip()
+
+    answer = await asyncio.to_thread(_groq_call)
+    log.info("Answer via Groq (%s): %d chars", settings.groq.model, len(answer))
     return answer
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+
+async def generate_grounded_answer(
+    user_query: str,
+    top_chunks: list[ContextChunk],
+    http_client: httpx.AsyncClient,
+) -> str:
+    """Generate a grounded RAG answer using the retrieved context chunks."""
+    context_block = _assemble_context(top_chunks)
+    user_message = (
+        f"**Context:**\n{context_block}\n\n"
+        f"**Question:** {user_query}\n\n"
+        "Provide a grounded answer with inline source citations."
+    )
+    return await _call_llm(_SYSTEM_PROMPT, user_message, http_client)
+
+
+async def generate_pr_summary(
+    pr_data_text: str,
+    user_query: str,
+    http_client: httpx.AsyncClient,
+) -> str:
+    """Generate a structured PR summary using the raw PR data text."""
+    user_message = f"**PR Data:**\n{pr_data_text}\n\n**Request:** {user_query}"
+    return await _call_llm(
+        _PR_SYSTEM_PROMPT, user_message, http_client, max_tokens=1024
+    )
