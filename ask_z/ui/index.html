@@ -8,200 +8,732 @@
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg: #ffffff;
-    --surface: #f7f8fa;
-    --border: #e5e7eb;
-    --text: #1f2328;
-    --muted: #57606a;
-    --accent: #3b82d4;
-    --warn: #b45309;
-    --warn-bg: #fffbeb;
-    --code-bg: #f3f4f6;
-    --radius: 6px;
-    --font: -apple-system, "Segoe UI", system-ui, sans-serif;
+    /* IBM Carbon colour tokens */
+    --ibm-blue-70:  #0043ce;
+    --ibm-blue-60:  #0f62fe;
+    --ibm-blue-50:  #4589ff;
+    --ibm-blue-10:  #edf5ff;
+    --ibm-gray-100: #161616;
+    --ibm-gray-90:  #262626;
+    --ibm-gray-80:  #393939;
+    --ibm-gray-70:  #525252;
+    --ibm-gray-30:  #c6c6c6;
+    --ibm-gray-20:  #e0e0e0;
+    --ibm-gray-10:  #f4f4f4;
+    --ibm-white:    #ffffff;
+    --ibm-teal-50:  #009d9a;
+    --ibm-teal-10:  #d9fbfb;
+    --ibm-purple-50:#8a3ffc;
+    --ibm-purple-10:#f6f2ff;
+    --ibm-yellow-30:#f1c21b;
+    --ibm-red-50:   #da1e28;
+    --ibm-red-10:   #fff1f1;
+    --ibm-green-50: #198038;
+    --ibm-green-10: #defbe6;
+
+    --font: 'IBM Plex Sans', -apple-system, 'Segoe UI', system-ui, sans-serif;
+    --mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+    --radius: 0px; /* Carbon uses sharp corners */
+    --shell-header: 48px;
   }
 
-  body { font-family: var(--font); font-size: 14px; line-height: 1.6;
-         background: var(--bg); color: var(--text); min-height: 100vh;
-         display: flex; flex-direction: column; }
+  body {
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.5;
+    background: var(--ibm-gray-10);
+    color: var(--ibm-gray-100);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
 
-  header { border-bottom: 1px solid var(--border); padding: 14px 24px;
-           display: flex; align-items: center; gap: 12px; background: var(--bg); }
-  header h1 { font-size: 16px; font-weight: 600; }
-  header .sub { color: var(--muted); font-size: 12px; margin-left: auto; }
+  /* ── IBM Carbon Shell Header ── */
+  .shell-header {
+    height: var(--shell-header);
+    background: var(--ibm-gray-100);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 0;
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    border-bottom: 1px solid var(--ibm-gray-80);
+  }
+  .shell-header .ibm-logo {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding-right: 16px;
+    border-right: 1px solid var(--ibm-gray-70);
+    margin-right: 16px;
+    flex-shrink: 0;
+  }
+  .ibm-logo svg { display: block; }
+  .shell-header .product-name {
+    font-size: 14px;
+    font-weight: 400;
+    color: var(--ibm-white);
+    letter-spacing: .01em;
+  }
+  .shell-header .product-name b { font-weight: 600; }
+  .shell-header .shell-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .shell-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    background: var(--ibm-blue-70);
+    color: var(--ibm-white);
+    letter-spacing: .04em;
+    font-weight: 500;
+  }
+  .chunk-count-pill {
+    font-size: 11px;
+    color: var(--ibm-gray-30);
+    padding: 2px 8px;
+    border: 1px solid var(--ibm-gray-70);
+    letter-spacing: .02em;
+  }
 
-  .layout { display: flex; flex: 1; min-height: 0; }
+  /* ── Layout ── */
+  .layout {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    height: calc(100vh - var(--shell-header));
+  }
 
   /* ── Sidebar ── */
-  .sidebar { width: 240px; border-right: 1px solid var(--border);
-             background: var(--surface); padding: 16px; flex-shrink: 0;
-             display: flex; flex-direction: column; gap: 20px; overflow-y: auto; }
-  .sidebar h2 { font-size: 11px; font-weight: 600; text-transform: uppercase;
-                letter-spacing: .06em; color: var(--muted); }
-  .sidebar label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-  .sidebar input[type=number], .sidebar input[type=range] {
-    width: 100%; padding: 5px 8px; border: 1px solid var(--border);
-    border-radius: var(--radius); background: var(--bg); font-size: 13px; color: var(--text); }
-  .sidebar input[type=range] { padding: 0; cursor: pointer; }
-  .val-display { font-size: 12px; color: var(--accent); font-weight: 500; }
-  .sidebar .history-list { display: flex; flex-direction: column; gap: 4px; }
-  .history-item { padding: 5px 8px; border-radius: var(--radius); cursor: pointer;
-                  font-size: 12px; color: var(--muted); border: 1px solid transparent;
-                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .history-item:hover { background: var(--border); color: var(--text); }
+  .sidebar {
+    width: 256px;
+    background: var(--ibm-white);
+    border-right: 1px solid var(--ibm-gray-20);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow-y: auto;
+  }
+  .sidebar-section {
+    border-bottom: 1px solid var(--ibm-gray-20);
+    padding: 16px;
+  }
+  .sidebar-section:last-child { border-bottom: none; }
+  .sidebar-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--ibm-gray-70);
+    margin-bottom: 12px;
+  }
+  .carbon-slider-wrap { margin-bottom: 16px; }
+  .carbon-slider-wrap:last-child { margin-bottom: 0; }
+  .slider-top {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: var(--ibm-gray-70);
+  }
+  .slider-val {
+    font-weight: 600;
+    color: var(--ibm-blue-60);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  input[type=range] {
+    width: 100%;
+    height: 4px;
+    -webkit-appearance: none;
+    background: var(--ibm-gray-20);
+    cursor: pointer;
+    border-radius: 0;
+    outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px; height: 16px;
+    background: var(--ibm-blue-60);
+    border: 2px solid var(--ibm-blue-60);
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  input[type=range]:focus::-webkit-slider-thumb {
+    box-shadow: 0 0 0 3px var(--ibm-blue-10);
+  }
 
-  /* ── Main ── */
-  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  /* History items */
+  .history-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--ibm-gray-80);
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: background .1s, border-color .1s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .history-item:hover {
+    background: var(--ibm-blue-10);
+    border-left-color: var(--ibm-blue-60);
+    color: var(--ibm-blue-60);
+  }
+  .history-item svg { flex-shrink: 0; }
+  .history-empty {
+    font-size: 12px;
+    color: var(--ibm-gray-30);
+    padding: 4px 0;
+    font-style: italic;
+  }
 
-  .query-bar { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; }
-  .query-bar textarea { flex: 1; resize: none; height: 56px; padding: 10px 12px;
-    border: 1px solid var(--border); border-radius: var(--radius);
-    font-family: var(--font); font-size: 14px; color: var(--text);
-    background: var(--bg); line-height: 1.5; }
-  .query-bar textarea:focus { outline: none; border-color: var(--accent); }
-  .query-bar button { padding: 0 20px; background: var(--accent); color: #fff;
-    border: none; border-radius: var(--radius); font-size: 14px; font-weight: 500;
-    cursor: pointer; white-space: nowrap; }
-  .query-bar button:disabled { opacity: .5; cursor: not-allowed; }
+  /* Status indicator */
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    padding: 4px 0;
+    color: var(--ibm-gray-70);
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--ibm-gray-30);
+    flex-shrink: 0;
+  }
+  .status-dot.green  { background: var(--ibm-green-50); }
+  .status-dot.yellow { background: var(--ibm-yellow-30); }
+  .status-dot.red    { background: var(--ibm-red-50); }
+  .status-detail {
+    font-size: 11px;
+    color: var(--ibm-gray-30);
+    margin-top: 4px;
+    font-family: var(--mono);
+    line-height: 1.7;
+  }
 
-  .results { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex;
-             flex-direction: column; gap: 20px; }
+  /* Suggested questions */
+  .suggested-btn {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--ibm-gray-80);
+    background: none;
+    border: none;
+    border-left: 2px solid transparent;
+    cursor: pointer;
+    line-height: 1.4;
+    transition: background .1s, border-color .1s;
+  }
+  .suggested-btn:hover {
+    background: var(--ibm-blue-10);
+    border-left-color: var(--ibm-blue-60);
+    color: var(--ibm-blue-60);
+  }
 
-  /* ── Placeholder ── */
-  .placeholder { flex: 1; display: flex; flex-direction: column; align-items: center;
-                 justify-content: center; gap: 10px; color: var(--muted); }
-  .placeholder p { font-size: 13px; }
+  /* ── Main panel ── */
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    background: var(--ibm-gray-10);
+  }
 
-  /* ── Loading ── */
-  .spinner { width: 20px; height: 20px; border: 2px solid var(--border);
-             border-top-color: var(--accent); border-radius: 50%;
-             animation: spin .7s linear infinite; flex-shrink: 0; }
+  /* Input area */
+  .input-area {
+    background: var(--ibm-white);
+    border-bottom: 1px solid var(--ibm-gray-20);
+    padding: 16px 24px;
+  }
+  .input-row {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--ibm-gray-30);
+    background: var(--ibm-white);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .input-row:focus-within {
+    border-color: var(--ibm-blue-60);
+    box-shadow: inset 0 0 0 1px var(--ibm-blue-60);
+  }
+  .input-row textarea {
+    flex: 1;
+    resize: none;
+    height: 52px;
+    padding: 12px 16px;
+    border: none;
+    outline: none;
+    font-family: var(--font);
+    font-size: 14px;
+    color: var(--ibm-gray-100);
+    background: transparent;
+    line-height: 1.5;
+  }
+  .input-row textarea::placeholder { color: var(--ibm-gray-30); }
+  .ask-btn {
+    width: 64px;
+    background: var(--ibm-blue-60);
+    color: var(--ibm-white);
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: var(--font);
+    letter-spacing: .04em;
+    transition: background .15s;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .ask-btn:hover:not(:disabled) { background: var(--ibm-blue-70); }
+  .ask-btn:disabled { background: var(--ibm-gray-30); cursor: not-allowed; }
+  .input-hint {
+    font-size: 11px;
+    color: var(--ibm-gray-30);
+    margin-top: 6px;
+  }
+
+  /* Results scroll area */
+  .results {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  /* Placeholder */
+  .placeholder {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--ibm-gray-30);
+    padding: 40px 0;
+  }
+  .placeholder-title {
+    font-size: 20px;
+    font-weight: 300;
+    color: var(--ibm-gray-70);
+    letter-spacing: -.01em;
+  }
+  .placeholder-sub {
+    font-size: 13px;
+    color: var(--ibm-gray-30);
+    text-align: center;
+    max-width: 480px;
+    line-height: 1.6;
+  }
+  .placeholder-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 8px;
+    max-width: 560px;
+  }
+  .placeholder-chip {
+    padding: 6px 14px;
+    border: 1px solid var(--ibm-gray-20);
+    background: var(--ibm-white);
+    font-size: 12px;
+    color: var(--ibm-gray-80);
+    cursor: pointer;
+    transition: background .1s, border-color .1s, color .1s;
+  }
+  .placeholder-chip:hover {
+    background: var(--ibm-blue-10);
+    border-color: var(--ibm-blue-60);
+    color: var(--ibm-blue-60);
+  }
+
+  /* ── Result block ── */
+  .result-block {
+    background: var(--ibm-white);
+    border: 1px solid var(--ibm-gray-20);
+    margin-bottom: 16px;
+  }
+  .result-query-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: var(--ibm-gray-100);
+    font-size: 12px;
+    color: var(--ibm-gray-30);
+    border-bottom: 1px solid var(--ibm-gray-80);
+  }
+  .result-query-row b { color: var(--ibm-white); font-weight: 400; }
+
+  /* Answer section */
+  .answer-section {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--ibm-gray-20);
+  }
+  .answer-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--ibm-blue-60);
+    margin-bottom: 12px;
+  }
+  .answer-label svg { color: var(--ibm-blue-60); }
+  .answer-body {
+    font-size: 14px;
+    line-height: 1.75;
+    color: var(--ibm-gray-100);
+  }
+  .answer-body code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--ibm-gray-10);
+    border: 1px solid var(--ibm-gray-20);
+    padding: 1px 5px;
+  }
+  .answer-body pre {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--ibm-gray-90);
+    color: #f2f4f8;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 12px 0;
+    line-height: 1.6;
+    border-left: 3px solid var(--ibm-blue-60);
+  }
+  .answer-body ul { padding-left: 20px; margin: 6px 0; }
+  .answer-body li { margin: 3px 0; }
+  .answer-body b  { font-weight: 600; }
+
+  /* Diagnostics */
+  .diag-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    padding: 8px 16px;
+    background: var(--ibm-gray-10);
+    border-bottom: 1px solid var(--ibm-gray-20);
+    font-size: 11px;
+    color: var(--ibm-gray-70);
+    font-family: var(--mono);
+  }
+  .diag-item {
+    padding: 2px 16px 2px 0;
+    white-space: nowrap;
+  }
+  .diag-item b { color: var(--ibm-gray-100); }
+
+  /* Chunks */
+  .chunks-section { padding: 0; }
+  .chunks-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--ibm-gray-70);
+    background: var(--ibm-gray-10);
+    border-bottom: 1px solid var(--ibm-gray-20);
+  }
+  .chunk {
+    border-bottom: 1px solid var(--ibm-gray-20);
+  }
+  .chunk:last-child { border-bottom: none; }
+  .chunk-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: var(--ibm-white);
+    flex-wrap: wrap;
+    cursor: pointer;
+    user-select: none;
+  }
+  .chunk-head:hover { background: var(--ibm-blue-10); }
+  .chunk-rank {
+    font-size: 10px;
+    font-weight: 700;
+    font-family: var(--mono);
+    width: 22px; height: 22px;
+    background: var(--ibm-blue-60);
+    color: var(--ibm-white);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .chunk-path {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--ibm-gray-100);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chunk-path a {
+    color: var(--ibm-blue-60);
+    text-decoration: none;
+  }
+  .chunk-path a:hover { text-decoration: underline; }
+  .chunk-score {
+    font-size: 11px;
+    font-family: var(--mono);
+    color: var(--ibm-gray-70);
+    white-space: nowrap;
+  }
+  .badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    font-weight: 500;
+    letter-spacing: .03em;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .badge.code         { background: var(--ibm-blue-10);   color: var(--ibm-blue-70); }
+  .badge.doc          { background: var(--ibm-teal-10);   color: var(--ibm-teal-50); }
+  .badge.external_doc { background: #fef3c7;              color: #92400e; }
+  .badge.test         { background: var(--ibm-purple-10); color: var(--ibm-purple-50); }
+  .badge.ADR          { background: var(--ibm-green-10);  color: var(--ibm-green-50); }
+  .chunk-body {
+    padding: 12px 16px 12px 48px;
+    background: var(--ibm-gray-10);
+    border-top: 1px solid var(--ibm-gray-20);
+    display: none;
+  }
+  .chunk-body.open { display: block; }
+  .chunk-body pre {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--ibm-gray-90);
+    color: #f2f4f8;
+    padding: 12px;
+    overflow-x: auto;
+    max-height: 240px;
+    overflow-y: auto;
+    line-height: 1.5;
+  }
+  .chunk-body p {
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--ibm-gray-80);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .chunk-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    font-size: 11px;
+    color: var(--ibm-gray-70);
+    margin-bottom: 8px;
+    font-family: var(--mono);
+  }
+
+  /* Spinner */
+  .loading-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 20px 0;
+    font-size: 13px;
+    color: var(--ibm-gray-70);
+  }
+  .spinner {
+    width: 18px; height: 18px;
+    border: 2px solid var(--ibm-gray-20);
+    border-top-color: var(--ibm-blue-60);
+    border-radius: 50%;
+    animation: spin .6s linear infinite;
+    flex-shrink: 0;
+  }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .loading-row { display: flex; align-items: center; gap: 10px;
-                 color: var(--muted); font-size: 13px; padding: 8px 0; }
 
-  /* ── Answer card ── */
-  .answer-card { border: 1px solid var(--border); border-radius: var(--radius);
-                 overflow: hidden; }
-  .answer-card .card-head { background: var(--surface); padding: 8px 14px;
-    border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
-    display: flex; align-items: center; gap: 8px; }
-  .answer-card .card-body { padding: 14px; font-size: 13px; line-height: 1.7;
-                             white-space: pre-wrap; word-break: break-word; }
-  .answer-card .card-body.warn { background: var(--warn-bg); color: var(--warn); }
+  /* Warning / error banners */
+  .banner {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 12px 16px;
+    font-size: 13px;
+    margin-bottom: 0;
+  }
+  .banner.warn {
+    background: #fdf6dd;
+    border-left: 3px solid var(--ibm-yellow-30);
+    color: #6f5001;
+  }
+  .banner.error {
+    background: var(--ibm-red-10);
+    border-left: 3px solid var(--ibm-red-50);
+    color: var(--ibm-red-50);
+  }
 
-  /* ── HyDE hypothesis ── */
-  .hyde-card { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-  .hyde-card .card-head { background: var(--surface); padding: 8px 14px;
-    border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-  .hyde-card .card-body { padding: 12px 14px; font-size: 12px; color: var(--muted);
-                           font-style: italic; white-space: pre-wrap; }
+  /* Hyde */
+  details.hyde-details {
+    padding: 0 16px 8px;
+    background: var(--ibm-gray-10);
+    border-bottom: 1px solid var(--ibm-gray-20);
+  }
+  details.hyde-details summary {
+    font-size: 11px;
+    color: var(--ibm-gray-70);
+    cursor: pointer;
+    padding: 8px 0;
+    user-select: none;
+    letter-spacing: .02em;
+  }
+  details.hyde-details .hyde-body {
+    font-size: 12px;
+    font-style: italic;
+    color: var(--ibm-gray-70);
+    padding: 8px 0 4px;
+    line-height: 1.65;
+    font-family: var(--font);
+  }
 
-  /* ── Diagnostics bar ── */
-  .diag-bar { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 11px;
-              color: var(--muted); padding: 6px 0; border-top: 1px solid var(--border);
-              margin-top: 4px; }
-  .diag-bar span b { color: var(--text); }
-
-  /* ── Chunks ── */
-  .chunks-header { font-size: 11px; font-weight: 600; text-transform: uppercase;
-                   letter-spacing: .06em; color: var(--muted); }
-  .chunk { border: 1px solid var(--border); border-radius: var(--radius);
-           overflow: hidden; }
-  .chunk-head { background: var(--surface); padding: 7px 12px;
-    border-bottom: 1px solid var(--border); display: flex; align-items: center;
-    gap: 10px; flex-wrap: wrap; }
-  .chunk-rank { background: var(--accent); color: #fff; font-size: 10px;
-                font-weight: 700; padding: 1px 6px; border-radius: 10px; flex-shrink: 0; }
-  .chunk-path { font-size: 12px; font-weight: 500; color: var(--text);
-                flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chunk-scores { font-size: 11px; color: var(--muted); white-space: nowrap; }
-  .badge { font-size: 10px; padding: 1px 6px; border-radius: 3px;
-           background: var(--code-bg); color: var(--muted); border: 1px solid var(--border); }
-  .badge.code { background: #e8f4fd; color: #1a6fa8; border-color: #c2ddf5; }
-  .badge.doc  { background: #e8f7ee; color: #1a7a3c; border-color: #b8e8c8; }
-  .badge.ADR  { background: #f5e8fd; color: #7a1aae; border-color: #dbb8f5; }
-  .badge.test { background: #fff3e0; color: #9a5000; border-color: #f5d9a8; }
-  .badge.external_doc { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
-  .chunk-meta { padding: 4px 12px 6px; font-size: 11px; color: var(--muted);
-                background: var(--surface); border-bottom: 1px solid var(--border);
-                display: flex; flex-wrap: wrap; gap: 4px 16px; }
-  .chunk-body { padding: 10px 12px; }
-  .chunk-body pre { background: var(--code-bg); border-radius: 4px; padding: 10px;
-    font-size: 12px; line-height: 1.5; overflow-x: auto; white-space: pre;
-    border: 1px solid var(--border); max-height: 260px; overflow-y: auto; }
-  .chunk-body p { font-size: 13px; line-height: 1.6; white-space: pre-wrap;
-                  word-break: break-word; }
-  details summary { cursor: pointer; user-select: none; }
-
-  /* ── Inline code in answers ── */
-  .card-body code { background: var(--code-bg); border: 1px solid var(--border);
-                    border-radius: 3px; padding: 1px 5px; font-size: 12px;
-                    font-family: "SFMono-Regular", Consolas, monospace; }
-  .card-body pre  { background: var(--code-bg); border: 1px solid var(--border);
-                    border-radius: var(--radius); padding: 12px; font-size: 12px;
-                    overflow-x: auto; margin: 8px 0; white-space: pre;
-                    font-family: "SFMono-Regular", Consolas, monospace; }
-  .card-body ul   { padding-left: 20px; margin: 6px 0; }
-  .card-body li   { margin: 2px 0; }
-
-  /* ── Error ── */
-  .error-card { border: 1px solid #fca5a5; border-radius: var(--radius);
-                background: #fff5f5; padding: 14px; font-size: 13px; color: #b91c1c; }
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--ibm-gray-20); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--ibm-gray-30); }
 </style>
 </head>
 <body>
 
-<header>
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2">
-    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35M11 8v6M8 11h6"/>
-  </svg>
-  <h1>Ask-Z</h1>
-  <span class="sub">IBM Z &amp; Spyre Knowledge Assistant — RAG pipeline</span>
+<!-- IBM Carbon Shell Header -->
+<header class="shell-header">
+  <div class="ibm-logo">
+    <!-- IBM 8-bar logo SVG -->
+    <svg width="40" height="16" viewBox="0 0 40 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0"  y="0"  width="40" height="2.3" fill="white"/>
+      <rect x="0"  y="3.4" width="40" height="2.3" fill="white"/>
+      <rect x="5"  y="6.9" width="30" height="2.3" fill="white"/>
+      <rect x="5"  y="10.3" width="30" height="2.3" fill="white"/>
+      <rect x="0"  y="13.7" width="40" height="2.3" fill="white"/>
+    </svg>
+  </div>
+  <span class="product-name"><b>Ask-Z</b> &nbsp;IBM Z &amp; Spyre Knowledge Assistant</span>
+  <div class="shell-right">
+    <span class="chunk-count-pill" id="chunk-count-pill">— chunks</span>
+    <span class="shell-tag">RAG · BM25+KNN</span>
+  </div>
 </header>
 
 <div class="layout">
+
   <!-- Sidebar -->
   <aside class="sidebar">
-    <div>
-      <h2>Options</h2>
-      <div style="margin-top:12px">
-        <label>Top-K chunks <span class="val-display" id="topk-val">5</span></label>
+
+    <!-- Search settings -->
+    <div class="sidebar-section">
+      <div class="sidebar-label">Search settings</div>
+      <div class="carbon-slider-wrap">
+        <div class="slider-top">
+          <span>Top-K results</span>
+          <span class="slider-val" id="topk-val">5</span>
+        </div>
         <input type="range" id="topk" min="1" max="20" value="5">
       </div>
-      <div style="margin-top:12px">
-        <label>Rerank threshold <span class="val-display" id="thresh-val">0.00</span></label>
+      <div class="carbon-slider-wrap">
+        <div class="slider-top">
+          <span>Rerank threshold</span>
+          <span class="slider-val" id="thresh-val">0.00</span>
+        </div>
         <input type="range" id="thresh" min="-1" max="1" step="0.05" value="0">
       </div>
     </div>
 
-    <div>
-      <h2>Recent queries</h2>
-      <div class="history-list" id="history"></div>
+    <!-- Suggested questions -->
+    <div class="sidebar-section">
+      <div class="sidebar-label">Try asking</div>
+      <button class="suggested-btn" data-q="How do I profile a Spyre model?">How do I profile a Spyre model?</button>
+      <button class="suggested-btn" data-q="What is the unified profiler API?">What is the unified profiler API?</button>
+      <button class="suggested-btn" data-q="How do I set up a pod with Spyre hardware?">How do I set up a pod with Spyre hardware?</button>
+      <button class="suggested-btn" data-q="How do I add a new op to the Spyre backend?">How do I add a new op to the Spyre backend?</button>
+      <button class="suggested-btn" data-q="What are the Spyre benchmark results?">What are the Spyre benchmark results?</button>
     </div>
 
-    <div>
-      <h2>Index status</h2>
-      <div id="es-status" style="font-size:12px; color:var(--muted)">Checking…</div>
+    <!-- Recent queries -->
+    <div class="sidebar-section">
+      <div class="sidebar-label">Recent queries</div>
+      <div id="history"><span class="history-empty">No queries yet</span></div>
     </div>
+
+    <!-- Index status -->
+    <div class="sidebar-section" style="margin-top:auto">
+      <div class="sidebar-label">Index status</div>
+      <div id="es-status">
+        <div class="status-row">
+          <div class="status-dot" id="status-dot"></div>
+          <span id="status-text">Checking…</span>
+        </div>
+        <div class="status-detail" id="status-detail"></div>
+      </div>
+    </div>
+
   </aside>
 
   <!-- Main -->
   <main>
-    <div class="query-bar">
-      <textarea id="query-input" placeholder="Ask about IBM Z, Spyre ops, model_utils, compiler pipeline…" rows="2"></textarea>
-      <button id="ask-btn">Ask</button>
+    <!-- Input bar -->
+    <div class="input-area">
+      <div class="input-row">
+        <textarea id="query-input"
+          placeholder="Ask about IBM Z, Spyre profiling, compiler pipeline, onboarding…"
+          rows="2"></textarea>
+        <button class="ask-btn" id="ask-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+        </button>
+      </div>
+      <div class="input-hint">Press <b>⌘ Enter</b> or <b>Ctrl Enter</b> to send</div>
     </div>
 
+    <!-- Results -->
     <div class="results" id="results">
       <div class="placeholder" id="placeholder">
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--border)" stroke-width="1.5">
-          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        <!-- IBM Research atom-like icon -->
+        <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+          <circle cx="28" cy="28" r="5" fill="#c6c6c6"/>
+          <ellipse cx="28" cy="28" rx="24" ry="9" stroke="#e0e0e0" stroke-width="1.5" fill="none"/>
+          <ellipse cx="28" cy="28" rx="24" ry="9" stroke="#e0e0e0" stroke-width="1.5" fill="none" transform="rotate(60 28 28)"/>
+          <ellipse cx="28" cy="28" rx="24" ry="9" stroke="#e0e0e0" stroke-width="1.5" fill="none" transform="rotate(120 28 28)"/>
         </svg>
-        <p>Ask a question about IBM Z or Spyre to get started.</p>
-        <p style="font-size:12px">Try: "What does model_utils.py do?" or "How does Spyre handle weight layout?"</p>
+        <div class="placeholder-title">What do you want to know?</div>
+        <div class="placeholder-sub">Ask anything about IBM Z, Spyre hardware, profiling tools, the torch-spyre compiler, or team onboarding.</div>
+        <div class="placeholder-chips">
+          <div class="placeholder-chip" data-q="How do I profile a Spyre model?">Profile a Spyre model</div>
+          <div class="placeholder-chip" data-q="How do I set up a pod with Spyre hardware?">Pod setup</div>
+          <div class="placeholder-chip" data-q="What is the unified profiler API?">Unified profiler API</div>
+          <div class="placeholder-chip" data-q="What are the Spyre benchmark results?">Benchmark results</div>
+          <div class="placeholder-chip" data-q="How do I add a new op to the Spyre backend?">Add a new op</div>
+          <div class="placeholder-chip" data-q="What is vLLM paged attention on Spyre?">vLLM on Spyre</div>
+        </div>
       </div>
     </div>
   </main>
@@ -210,129 +742,137 @@
 <script>
 const API = '/api/v1';
 
-// ── Controls ───────────────────────────────────────────────────────────────────
-const topkEl   = document.getElementById('topk');
-const threshEl = document.getElementById('thresh');
-const topkVal  = document.getElementById('topk-val');
-const threshVal= document.getElementById('thresh-val');
-topkEl.addEventListener('input',   () => topkVal.textContent  = topkEl.value);
-threshEl.addEventListener('input', () => threshVal.textContent= parseFloat(threshEl.value).toFixed(2));
+// ── Controls ────────────────────────────────────────────────────────────────
+const topkEl    = document.getElementById('topk');
+const threshEl  = document.getElementById('thresh');
+topkEl.addEventListener('input',   () => document.getElementById('topk-val').textContent  = topkEl.value);
+threshEl.addEventListener('input', () => document.getElementById('thresh-val').textContent= parseFloat(threshEl.value).toFixed(2));
 
-// ── History ────────────────────────────────────────────────────────────────────
-const historyEl = document.getElementById('history');
-const _history  = [];
+// ── Suggested / chip click ──────────────────────────────────────────────────
+document.querySelectorAll('[data-q]').forEach(el => {
+  el.addEventListener('click', () => {
+    document.getElementById('query-input').value = el.dataset.q;
+    submit();
+  });
+});
+
+// ── History ─────────────────────────────────────────────────────────────────
+const _history = [];
 function addHistory(q) {
   if (_history.includes(q)) return;
   _history.unshift(q);
   if (_history.length > 8) _history.pop();
-  historyEl.innerHTML = _history.map(h =>
-    `<div class="history-item" title="${esc(h)}">${esc(h)}</div>`
-  ).join('');
-  historyEl.querySelectorAll('.history-item').forEach((el, i) => {
+  const hist = document.getElementById('history');
+  hist.innerHTML = _history.map(h => `
+    <div class="history-item" title="${esc(h)}">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      ${esc(h)}
+    </div>`).join('');
+  hist.querySelectorAll('.history-item').forEach((el, i) => {
     el.addEventListener('click', () => {
       document.getElementById('query-input').value = _history[i];
     });
   });
 }
 
-// ── ES health ─────────────────────────────────────────────────────────────────
+// ── Health check ─────────────────────────────────────────────────────────────
 async function checkHealth() {
-  const el = document.getElementById('es-status');
+  const dot    = document.getElementById('status-dot');
+  const text   = document.getElementById('status-text');
+  const detail = document.getElementById('status-detail');
+  const pill   = document.getElementById('chunk-count-pill');
   try {
     const r = await fetch('/health/ready');
     if (r.ok) {
       const d = await r.json();
-      el.innerHTML = `<span style="color:#1a7a3c">● Ready</span><br>ES ${d.elasticsearch}<br>Index: ${d.index}`;
+      dot.className = 'status-dot green';
+      text.textContent = 'Ready';
+      detail.innerHTML = `ES ${d.elasticsearch}<br>Index: ${d.index}`;
+      if (d.doc_count !== undefined) {
+        pill.textContent = `${Number(d.doc_count).toLocaleString()} chunks`;
+      }
     } else {
-      el.innerHTML = `<span style="color:#b91c1c">● ES unreachable</span>`;
+      dot.className = 'status-dot red';
+      text.textContent = 'ES unreachable';
     }
   } catch {
-    el.innerHTML = `<span style="color:#b45309">● API offline</span>`;
+    dot.className = 'status-dot yellow';
+    text.textContent = 'API offline';
   }
 }
 checkHealth();
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// Minimal markdown → HTML: bold, inline code, fenced code blocks, bullet lists.
 function mdToHtml(s) {
-  // fenced code blocks
-  s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, _lang, code) =>
+  s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, _l, code) =>
     `<pre>${esc(code.trimEnd())}</pre>`);
-  // inline code
   s = s.replace(/`([^`]+)`/g, (_, c) => `<code>${esc(c)}</code>`);
-  // bold
   s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-  // bullet list lines
   s = s.replace(/^[ \t]*[•\-\*] (.+)$/gm, '<li>$1</li>');
   s = s.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
-  // paragraphs: double newline → <br><br>
   s = s.replace(/\n{2,}/g, '<br><br>').replace(/\n/g, '<br>');
   return s;
 }
 
-function isCode(chunk) {
-  return chunk.doc_type === 'code' || chunk.file_path.endsWith('.py');
+function isCode(c) {
+  return c.doc_type === 'code' || c.file_path.endsWith('.py');
 }
 
-function renderChunk(c) {
-  const body = isCode(c)
-    ? `<pre>${esc(c.text)}</pre>`
-    : `<p>${esc(c.text)}</p>`;
-
-  const stale = c.staleness_ttl_flag
-    ? `<span style="color:var(--warn)">⚠ stale</span>` : '';
-
-  // Show just the filename for external docs (full path is too noisy),
-  // full relative path for repo files.
+function renderChunk(c, idx) {
   const displayPath = c.doc_type === 'external_doc'
     ? c.file_path.split('/').pop()
     : c.file_path;
-
-  // If there's a real source URL (not just the file path), make it a link.
   const pathHtml = (c.source_url && c.source_url !== c.file_path)
-    ? `<a href="${esc(c.source_url)}" target="_blank" style="color:var(--accent);text-decoration:none"
-         title="Open source: ${esc(c.source_url)}">${esc(displayPath)} ↗</a>`
+    ? `<a href="${esc(c.source_url)}" target="_blank" title="${esc(c.source_url)}">${esc(displayPath)} ↗</a>`
     : `<span>${esc(displayPath)}</span>`;
-
+  const body = isCode(c)
+    ? `<pre>${esc(c.text)}</pre>`
+    : `<p>${esc(c.text)}</p>`;
+  const bodyId = `cbody-${idx}`;
   return `
     <div class="chunk">
-      <div class="chunk-head">
-        <span class="chunk-rank">#${c.rank}</span>
-        <span class="chunk-path" title="${esc(c.file_path)}">${pathHtml}</span>
+      <div class="chunk-head" onclick="toggleChunk('${bodyId}')">
+        <span class="chunk-rank">${c.rank}</span>
+        <span class="chunk-path">${pathHtml}</span>
         <span class="badge ${esc(c.doc_type)}">${esc(c.doc_type)}</span>
-        <span class="chunk-scores">score ${c.score.toFixed(4)} · rrf ${c.rrf_score.toFixed(4)}</span>
+        <span class="chunk-score">${c.score.toFixed(4)}</span>
       </div>
-      <div class="chunk-meta">
-        <span>component: <b>${esc(c.component_tag)}</b></span>
-        <span>author: <b>${esc(c.git_blame_author || '—')}</b></span>
-        <span>updated: <b>${esc(c.last_updated || '—')}</b></span>
-        <span>version: <b>${esc(c.version || '—')}</b></span>
-        ${stale}
+      <div class="chunk-body" id="${bodyId}">
+        <div class="chunk-meta">
+          <span>component: <b>${esc(c.component_tag)}</b></span>
+          <span>chunk: <b>${c.chunk_index}</b></span>
+          <span>updated: <b>${esc(c.last_updated || '—')}</b></span>
+        </div>
+        ${body}
       </div>
-      <div class="chunk-body">${body}</div>
     </div>`;
+}
+
+function toggleChunk(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.toggle('open');
 }
 
 function renderDiag(d) {
   const knnNote = d.knn_hits === 0
-    ? ' <span style="color:var(--warn);font-size:10px">(BM25 only — quota)</span>' : '';
-  return `
-    <div class="diag-bar">
-      <span>HyDE <b>${d.hyde_ms} ms</b></span>
-      <span>BM25 hits <b>${d.bm25_hits}</b></span>
-      <span>KNN hits <b>${d.knn_hits}</b>${knnNote}</span>
-      <span>RRF candidates <b>${d.rrf_candidates}</b></span>
-      <span>reranked <b>${d.reranked_count}</b></span>
-      <span>dropped <b>${d.dropped_below_threshold}</b></span>
-      <span>total <b>${d.total_ms} ms</b></span>
-    </div>`;
+    ? ' <span style="color:#f1c21b">(BM25 only)</span>' : '';
+  return `<div class="diag-row">
+    <span class="diag-item">hyde <b>${d.hyde_ms}ms</b></span>
+    <span class="diag-item">bm25 <b>${d.bm25_hits}</b></span>
+    <span class="diag-item">knn <b>${d.knn_hits}</b>${knnNote}</span>
+    <span class="diag-item">rrf <b>${d.rrf_candidates}</b></span>
+    <span class="diag-item">reranked <b>${d.reranked_count}</b></span>
+    <span class="diag-item">total <b>${d.total_ms}ms</b></span>
+  </div>`;
 }
 
-// ── Submit ─────────────────────────────────────────────────────────────────────
+// ── Submit ───────────────────────────────────────────────────────────────────
 async function submit() {
   const q = document.getElementById('query-input').value.trim();
   if (!q) return;
@@ -341,11 +881,9 @@ async function submit() {
   const results = document.getElementById('results');
   btn.disabled  = true;
 
-  // Hide placeholder
   const ph = document.getElementById('placeholder');
   if (ph) ph.style.display = 'none';
 
-  // Loading indicator
   const loadId = 'load-' + Date.now();
   results.insertAdjacentHTML('afterbegin',
     `<div class="loading-row" id="${loadId}"><div class="spinner"></div>Running pipeline…</div>`);
@@ -354,7 +892,7 @@ async function submit() {
     const resp = await fetch(`${API}/query`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
+      body: JSON.stringify({
         query:            q,
         top_k:            parseInt(topkEl.value, 10),
         rerank_threshold: parseFloat(threshEl.value),
@@ -366,62 +904,47 @@ async function submit() {
 
     if (!resp.ok) {
       results.insertAdjacentHTML('afterbegin',
-        `<div class="error-card"><b>${esc(data.error?.code || 'error')}</b>: ${esc(data.error?.message || JSON.stringify(data))}</div>`
-      );
+        `<div class="result-block"><div class="banner error"><b>${esc(data.error?.code||'error')}</b>: ${esc(data.error?.message||JSON.stringify(data))}</div></div>`);
       return;
     }
 
     addHistory(q);
 
-    const quotaMode = data.answer.startsWith('⚠ No relevant context');
     const noResults = data.answer.startsWith('⚠ No relevant context');
-    const hydeSkipped = data.hyde_hypothesis && data.hyde_hypothesis.startsWith('[HyDE skipped');
+    const quotaMode = noResults;
 
-    // ── Build result block ──────────────────────────────────────────────────
-    let html = `<div style="display:flex;flex-direction:column;gap:12px;border-top:2px solid var(--border);padding-top:16px">`;
-    html += `<div style="font-size:12px;color:var(--muted)">Query: <b>${esc(data.query)}</b></div>`;
+    let html = `<div class="result-block">`;
 
+    // Query label
+    html += `<div class="result-query-row">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <b>${esc(data.query)}</b>
+    </div>`;
+
+    // Quota/error banner
     if (quotaMode) {
-      const isRateLimit = data.answer.includes('429') ||
-        (data.diagnostics.hyde_ms > 500 && data.diagnostics.knn_hits === 0);
-      const bannerMsg = isRateLimit
-        ? '<b>watsonx.ai rate limit (HTTP 429)</b> — too many requests per minute. Wait 60 seconds and retry.'
-        : '<b>watsonx.ai quota exhausted (HTTP 403)</b> — monthly token quota reached. Quota resets monthly on your IBM Cloud account.';
-      html += `<div style="
-        background:var(--warn-bg);border:1px solid #fde68a;border-radius:var(--radius);
-        padding:10px 14px;font-size:13px;color:var(--warn);display:flex;gap:8px;align-items:flex-start">
-        <span style="flex-shrink:0">⚠</span>
-        <span>${bannerMsg}
-        Retrieval is fully functional; the top matching source chunks are shown below.</span>
-      </div>`;
-    } else if (noResults) {
-      html += `<div style="
-        background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
-        padding:10px 14px;font-size:13px;color:var(--muted)">
-        No relevant chunks found above the rerank threshold. Try lowering the threshold or rephrasing.
-      </div>`;
-    } else {
-      // Normal LLM answer — render with light markdown.
-      html += `<div class="answer-card">
-        <div class="card-head">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          Answer
-        </div>
-        <div class="card-body" style="font-size:13px;line-height:1.75">${mdToHtml(data.answer)}</div>
+      html += `<div class="banner warn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:1px"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <span>watsonx.ai quota exhausted — retrieval is active, answer generation is limited. Chunks are shown below.</span>
       </div>`;
     }
 
-    // HyDE hypothesis (collapsible, only when watsonx generated one)
-    if (data.hyde_hypothesis && !data.hyde_hypothesis.startsWith('[HyDE skipped')) {
-      html += `<details>
-        <summary style="font-size:11px;color:var(--muted);cursor:pointer">
-          HyDE hypothesis (synthetic query document used for KNN search)
-        </summary>
-        <div style="margin-top:6px;padding:10px 14px;background:var(--surface);
-          border:1px solid var(--border);border-radius:var(--radius);
-          font-size:12px;color:var(--muted);font-style:italic;line-height:1.6">
-          ${esc(data.hyde_hypothesis)}
+    // Answer
+    if (!noResults) {
+      html += `<div class="answer-section">
+        <div class="answer-label">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+          Answer
         </div>
+        <div class="answer-body">${mdToHtml(data.answer)}</div>
+      </div>`;
+    }
+
+    // HyDE
+    if (data.hyde_hypothesis && !data.hyde_hypothesis.startsWith('[HyDE skipped')) {
+      html += `<details class="hyde-details">
+        <summary>▸ HyDE hypothesis (synthetic document used for semantic search)</summary>
+        <div class="hyde-body">${esc(data.hyde_hypothesis)}</div>
       </details>`;
     }
 
@@ -429,21 +952,23 @@ async function submit() {
     html += renderDiag(data.diagnostics);
 
     // Chunks
-    if (data.chunks.length > 0) {
-      html += `<div class="chunks-header">Source chunks (${data.chunks.length})</div>`;
-      html += data.chunks.map(renderChunk).join('');
-    } else if (!noResults) {
-      html += `<div style="font-size:13px;color:var(--muted)">No chunks returned above threshold.</div>`;
+    if (data.chunks && data.chunks.length > 0) {
+      html += `<div class="chunks-section">
+        <div class="chunks-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          Source chunks (${data.chunks.length}) — click to expand
+        </div>
+        ${data.chunks.map((c, i) => renderChunk(c, i + '_' + Date.now())).join('')}
+      </div>`;
     }
 
     html += `</div>`;
-
     results.insertAdjacentHTML('afterbegin', html);
 
   } catch (err) {
     document.getElementById(loadId)?.remove();
     results.insertAdjacentHTML('afterbegin',
-      `<div class="error-card">Network error: ${esc(String(err))}</div>`);
+      `<div class="result-block"><div class="banner error">Network error: ${esc(String(err))}</div></div>`);
   } finally {
     btn.disabled = false;
   }
