@@ -372,15 +372,24 @@ async def execute_pipeline(
       HyDE → hybrid BM25+KNN → RRF → rerank → generate.
     """
     from ask_z.api.github_tools import detect_pr_query, fetch_pr_context
-    from ask_z.api.generator import generate_grounded_answer, generate_pr_summary
+    from ask_z.api.generator import (
+        generate_grounded_answer,
+        generate_pr_review,
+        generate_pr_summary,
+    )
 
     t_start = time.perf_counter()
 
     # ── PR short-circuit ──────────────────────────────────────────────────────
-    pr_number = detect_pr_query(query)
-    if pr_number is not None:
-        log.info("PR query detected — fetching PR #%d from GitHub.", pr_number)
-        pr_data = await fetch_pr_context(pr_number, http_client)
+    pr_result = detect_pr_query(query)
+    if pr_result is not None:
+        pr_number, pr_intent = pr_result
+        log.info("PR query detected — PR #%d | intent=%s", pr_number, pr_intent)
+        pr_data = await fetch_pr_context(
+            pr_number,
+            http_client,
+            include_diff=(pr_intent == "review"),
+        )
 
         if pr_data is None:
             answer = (
@@ -419,7 +428,17 @@ async def execute_pipeline(
             content_hash=hashlib.md5(pr_data["context_text"].encode()).hexdigest(),
         )
 
-        answer = await generate_pr_summary(pr_data["context_text"], query, http_client)
+        if pr_intent == "review":
+            answer = await generate_pr_review(
+                pr_data["context_text"], query, http_client
+            )
+            action = "reviewed"
+        else:
+            answer = await generate_pr_summary(
+                pr_data["context_text"], query, http_client
+            )
+            action = "summarised"
+
         total_ms = round((time.perf_counter() - t_start) * 1000, 1)
         pr_diag = PipelineDiagnostics(
             hyde_ms=0,
@@ -431,8 +450,9 @@ async def execute_pipeline(
             total_ms=total_ms,
         )
         log.info(
-            "PR #%d summarised: %d chars | %.0f ms",
+            "PR #%d %s: %d chars | %.0f ms",
             pr_number,
+            action,
             len(answer),
             total_ms,
         )

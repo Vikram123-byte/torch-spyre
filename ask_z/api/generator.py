@@ -72,6 +72,42 @@ Be direct and factual. Do not add disclaimers or say "I cannot find" anything �
 all the information you need is in the PR data block provided.
 """
 
+_PR_REVIEW_SYSTEM_PROMPT = """\
+You are a senior software engineer performing a thorough code review of a GitHub \
+Pull Request. You will be given the PR metadata, description, changed files, diff \
+patches, existing review comments, and discussion threads.
+
+Your job is to produce an actionable, structured code review. Be specific — \
+reference file names and, where possible, the relevant diff lines. \
+Do not add disclaimers or say "I cannot assess" anything — \
+all the information you need is in the PR data block provided.
+
+**Output format (use these exact sections):**
+
+## Overview
+Two to three sentences: what this PR changes and why.
+
+## Code Quality
+Point-by-point observations about correctness, logic, naming, style, and \
+maintainability. Flag any bugs or logic errors explicitly.
+
+## Test Coverage
+Are the changes covered by tests? Are edge cases handled? \
+Call out anything that should be tested but isn't.
+
+## Security & Safety
+Any security concerns (injection, auth bypass, unsafe data handling, etc.). \
+Write "None identified" if there are no concerns.
+
+## Existing Review Comments
+Summarise what reviewers have already flagged and whether those issues appear \
+to be addressed in the diff.
+
+## Merge Readiness
+One of: ✅ Ready to merge | ⚠ Needs minor changes | ❌ Needs significant work — \
+followed by a single sentence explaining why.
+"""
+
 # ── Context assembly ──────────────────────────────────────────────────────────
 
 
@@ -263,4 +299,25 @@ async def generate_pr_summary(
     user_message = f"**PR Data:**\n{pr_data_text}\n\n**Request:** {user_query}"
     return await _call_llm(
         _PR_SYSTEM_PROMPT, user_message, http_client, max_tokens=1024
+    )
+
+
+async def generate_pr_review(
+    pr_data_text: str,
+    user_query: str,
+    http_client: httpx.AsyncClient,
+) -> str:
+    """
+    Perform a structured code review of a PR.
+
+    Uses ``_PR_REVIEW_SYSTEM_PROMPT`` which instructs the LLM to act as a
+    senior engineer — covering code quality, test coverage, security, and
+    merge readiness.  The diff patch is expected to be embedded in
+    ``pr_data_text`` by ``fetch_pr_context(include_diff=True)``.
+    """
+    user_message = (
+        f"**PR Data (with diff):**\n{pr_data_text}\n\n**Request:** {user_query}"
+    )
+    return await _call_llm(
+        _PR_REVIEW_SYSTEM_PROMPT, user_message, http_client, max_tokens=1500
     )

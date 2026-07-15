@@ -5,17 +5,18 @@ GitHub PR fetcher for the Ask-Z pipeline.
 
 Detects when a query is asking about a GitHub PR and fetches live data
 from the GitHub REST API — title, description, diff stats, file list,
-comments, and review status — then returns it as a ContextChunk so the
-generator can produce a grounded summary.
+comments, review status, and optionally the actual patch diff for code
+review mode.
 
 Supported query patterns (case-insensitive):
-  "summarise PR 4345"
-  "summarize PR #3189"
-  "what is in PR 3200?"
-  "can you explain pull request 4345"
-  "PR #4345 summary"
-  "review PR 4000"
-  "tell me about pr 3500"
+  "summarise PR 4345"        → intent="summary"
+  "summarize PR #3189"       → intent="summary"
+  "what is in PR 3200?"      → intent="summary"
+  "can you explain PR 4345"  → intent="summary"
+  "PR #4345 summary"         → intent="summary"
+  "review PR 4000"           → intent="review"
+  "do a code review of PR 3500"  → intent="review"
+  "check PR 3178"            → intent="review"
 
 Environment variable:
   GITHUB_TOKEN — personal access token for private repos + higher rate limit.
@@ -37,34 +38,48 @@ log = logging.getLogger("ask_z.api.github_tools")
 _DEFAULT_ORG = "torch-spyre"
 _DEFAULT_REPO = "torch-spyre"
 
-# Regex to extract PR number from a natural-language query.
-_PR_PATTERN = re.compile(
+# ── Intent-aware PR detection ─────────────────────────────────────────────────
+
+# Patterns that signal a code-review intent (vs a plain summary).
+_REVIEW_VERBS = re.compile(
+    r"\b(review|code[\s-]review|check|inspect|audit|critique|assess)\b",
+    re.IGNORECASE,
+)
+
+# Patterns that extract a PR number from the query.
+_PR_NUMBER_PATTERN = re.compile(
     r"""
     (?:
-        (?:summarise|summarize|summary|explain|describe|review|show|tell\s+me\s+about|what(?:'s|\s+is)?\s+in)
+        (?:summarise|summarize|summary|explain|describe|review|show
+          |check|inspect|audit|critique|assess
+          |tell\s+me\s+about|what(?:'s|\s+is)?\s+in
+          |code[\s-]review\s+(?:of\s+)?|do\s+a\s+(?:code[\s-])?review\s+(?:of\s+)?)
         \s+
         (?:pr|pull\s*request|pull-request)
         \s*[#]?(\d+)
     |
         (?:pr|pull\s*request|pull-request)
         \s*[#]?(\d+)
-        (?:\s+(?:summary|summarise|summarize|review|details?))?
+        (?:\s+(?:summary|summarise|summarize|review|check|details?))?
     )
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 
 
-def detect_pr_query(query: str) -> int | None:
+def detect_pr_query(query: str) -> tuple[int, str] | None:
     """
-    Return the PR number if the query is asking about a specific PR,
-    otherwise return None.
+    Return ``(pr_number, intent)`` if the query is asking about a specific PR,
+    otherwise return ``None``.
+
+    ``intent`` is either ``"review"`` (code-review request) or ``"summary"``.
     """
-    m = _PR_PATTERN.search(query)
-    if m:
-        num = m.group(1) or m.group(2)
-        return int(num)
-    return None
+    m = _PR_NUMBER_PATTERN.search(query)
+    if not m:
+        return None
+    num = int(m.group(1) or m.group(2))
+    intent = "review" if _REVIEW_VERBS.search(query) else "summary"
+    return num, intent
 
 
 def _gh_headers() -> dict[str, str]:
@@ -84,6 +99,7 @@ async def fetch_pr_context(
     *,
     org: str = _DEFAULT_ORG,
     repo: str = _DEFAULT_REPO,
+    include_diff: bool = False,
 ) -> dict[str, Any] | None:
     """
     Fetch a GitHub PR and return a structured context dict ready for the
@@ -95,6 +111,9 @@ async def fetch_pr_context(
       - Changed files list (filename + additions + deletions)
       - Review comments summary (latest 10)
       - Review status (approved/changes-requested/pending)
+
+    When ``include_diff=True`` the actual patch hunks from each changed file
+    are fetched and appended so the LLM can do a real code review.
     """
     base = f"https://api.github.com/repos/{org}/{repo}"
     headers = _gh_headers()
@@ -110,7 +129,7 @@ async def fetch_pr_context(
         pr_resp.raise_for_status()
         pr = pr_resp.json()
 
-        # ── 2. Changed files ───────────────────────────────────────────────
+        # ── 2. Changed files (includes patch hunk when include_diff=True) ──
         files_resp = await http_client.get(
             f"{base}/pulls/{pr_number}/files",
             headers=headers,
@@ -139,6 +158,16 @@ async def fetch_pr_context(
         )
         comments_resp.raise_for_status()
         comments = comments_resp.json()
+
+        # ── 5. Review comments (inline, line-level) ───────────────────────
+        review_comments_resp = await http_client.get(
+            f"{base}/pulls/{pr_number}/comments",
+            headers=headers,
+            params={"per_page": 20},
+            timeout=10,
+        )
+        review_comments_resp.raise_for_status()
+        review_comments = review_comments_resp.json()
 
     except httpx.HTTPStatusError as exc:
         log.error(
@@ -179,13 +208,23 @@ async def fetch_pr_context(
     if not review_lines:
         review_lines = ["  No reviews yet."]
 
-    # Comment excerpts
+    # Comment excerpts (issue-level)
     comment_lines: list[str] = []
     for c in comments[:5]:
         user = c.get("user", {}).get("login", "?")
         body = (c.get("body") or "").strip()[:200]
         if body:
             comment_lines.append(f"  @{user}: {body}")
+
+    # Inline review comments (line-level, most useful for code review)
+    inline_comment_lines: list[str] = []
+    for c in review_comments[:15]:
+        user = c.get("user", {}).get("login", "?")
+        path = c.get("path", "")
+        line = c.get("line") or c.get("original_line") or "?"
+        body = (c.get("body") or "").strip()[:300]
+        if body:
+            inline_comment_lines.append(f"  @{user} on {path}:{line} — {body}")
 
     # Labels
     labels = [lbl.get("name", "") for lbl in pr.get("labels", [])]
@@ -213,9 +252,35 @@ Changed Files ({len(files)} total · +{total_additions} / -{total_deletions} lin
 Review Status:
 {chr(10).join(review_lines)}
 
-Comments ({len(comments)} total):
+Discussion Comments ({len(comments)} total):
 {chr(10).join(comment_lines) if comment_lines else "  (no comments)"}
+
+Inline Review Comments ({len(review_comments)} total):
+{chr(10).join(inline_comment_lines) if inline_comment_lines else "  (no inline comments)"}
 """
+
+    # ── Append diff patch for review mode ─────────────────────────────────
+    if include_diff:
+        diff_sections: list[str] = []
+        # Budget: ~6000 chars of diff to stay comfortably within context window.
+        budget = 6000
+        for f in files[:20]:
+            if budget <= 0:
+                break
+            fname = f.get("filename", "")
+            patch = (f.get("patch") or "").strip()
+            if not patch:
+                continue
+            # Truncate per-file patch if very long.
+            if len(patch) > 1500:
+                patch = patch[:1500] + "\n... (truncated)"
+            section = f"--- {fname} ---\n{patch}"
+            diff_sections.append(section)
+            budget -= len(section)
+        if diff_sections:
+            context_text += "\nCode Diff:\n" + "\n\n".join(diff_sections) + "\n"
+        else:
+            context_text += "\nCode Diff:\n  (no patch data available)\n"
 
     return {
         "pr_number": pr_number,
