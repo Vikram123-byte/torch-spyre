@@ -170,11 +170,23 @@ async def fetch_pr_context(
         review_comments = review_comments_resp.json()
 
     except httpx.HTTPStatusError as exc:
-        log.error(
-            "GitHub API error fetching PR #%d: HTTP %s",
-            pr_number,
-            exc.response.status_code,
-        )
+        status = exc.response.status_code
+        if status == 403:
+            # Try to surface the GitHub rate-limit message from the body.
+            try:
+                gh_msg = exc.response.json().get("message", "")
+            except Exception:
+                gh_msg = ""
+            log.error(
+                "GitHub API rate-limit / auth error (HTTP 403) for PR #%d: %s",
+                pr_number,
+                gh_msg,
+            )
+            return {"_error": "rate_limit", "_message": gh_msg}
+        elif status == 404:
+            log.warning("PR #%d not found in %s/%s (404).", pr_number, org, repo)
+            return {"_error": "not_found"}
+        log.error("GitHub API error fetching PR #%d: HTTP %s", pr_number, status)
         return None
     except Exception as exc:
         log.error("GitHub API error fetching PR #%d: %s", pr_number, exc)

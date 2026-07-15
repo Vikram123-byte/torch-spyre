@@ -391,11 +391,28 @@ async def execute_pipeline(
             include_diff=(pr_intent == "review"),
         )
 
-        if pr_data is None:
-            answer = (
-                f"⚠ Could not fetch PR #{pr_number} from GitHub. "
-                "Make sure GITHUB_TOKEN is set in ask_z/.env and the PR number is correct."
-            )
+        if pr_data is None or "_error" in (pr_data or {}):
+            error_kind = (pr_data or {}).get("_error") if pr_data else None
+            if error_kind == "rate_limit":
+                answer = (
+                    f"⚠ GitHub API rate limit exceeded while fetching PR #{pr_number}.\n\n"
+                    "Unauthenticated requests are capped at **60 per hour**. "
+                    "Add a GitHub personal access token to fix this:\n\n"
+                    "1. Go to https://github.com/settings/tokens → *Generate new token (classic)*\n"
+                    "2. Grant the `repo` scope (or `public_repo` for public repos only)\n"
+                    "3. Add the line below to `ask_z/.env` and restart the server:\n\n"
+                    "```\nGITHUB_TOKEN=ghp_your_token_here\n```"
+                )
+            elif error_kind == "not_found":
+                answer = (
+                    f"⚠ PR #{pr_number} was not found in `torch-spyre/torch-spyre`. "
+                    "Double-check the PR number and try again."
+                )
+            else:
+                answer = (
+                    f"⚠ Could not fetch PR #{pr_number} from GitHub. "
+                    "Make sure GITHUB_TOKEN is set in ask_z/.env and the PR number is correct."
+                )
             empty_diag = PipelineDiagnostics(
                 hyde_ms=0,
                 bm25_hits=0,
