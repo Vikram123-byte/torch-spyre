@@ -362,20 +362,83 @@ async def execute_pipeline(
     http_client: httpx.AsyncClient,
 ) -> tuple[str, str, list[ContextChunk], PipelineDiagnostics]:
     """
-    Execute the full RAG retrieval pipeline including answer generation.
+    Execute the full Ask-Z pipeline.
 
-    Returns (hyde_hypothesis, generated_answer, context_chunks, diagnostics).
+    If the query is asking about a GitHub PR (e.g. "summarise PR 4345"),
+    the pipeline short-circuits: fetches the PR from GitHub API and sends
+    it directly to the generator — no RAG retrieval needed.
 
-    Quota-aware fallback
-    ─────────────────────
-    When watsonx.ai returns HTTP 403 (token_quota_reached) the pipeline
-    degrades gracefully:
-      • HyDE fails → fall back to BM25-only search (no KNN, no hyde vector).
-      • Answer generation fails → return the raw top-chunk texts as the answer.
-    This ensures the API always returns something useful even when the IBM
-    Cloud free-tier quota is exhausted.
+    Otherwise runs the full RAG pipeline:
+      HyDE → hybrid BM25+KNN → RRF → rerank → generate.
     """
+    from ask_z.api.github_tools import detect_pr_query, fetch_pr_context
+    from ask_z.api.generator import generate_grounded_answer
+
     t_start = time.perf_counter()
+
+    # ── PR short-circuit ──────────────────────────────────────────────────────
+    pr_number = detect_pr_query(query)
+    if pr_number is not None:
+        log.info("PR query detected — fetching PR #%d from GitHub.", pr_number)
+        pr_data = await fetch_pr_context(pr_number, http_client)
+
+        if pr_data is None:
+            answer = (
+                f"⚠ Could not fetch PR #{pr_number} from GitHub. "
+                "Make sure GITHUB_TOKEN is set in ask_z/.env and the PR number is correct."
+            )
+            empty_diag = PipelineDiagnostics(
+                hyde_ms=0,
+                bm25_hits=0,
+                knn_hits=0,
+                rrf_candidates=0,
+                reranked_count=0,
+                dropped_below_threshold=0,
+                total_ms=round((time.perf_counter() - t_start) * 1000, 1),
+            )
+            return "", answer, [], empty_diag
+
+        # Build a synthetic ContextChunk from the PR data so the generator
+        # can cite it like any other source.
+        import hashlib
+
+        pr_chunk = ContextChunk(
+            rank=1,
+            score=1.0,
+            rrf_score=1.0,
+            text=pr_data["context_text"],
+            file_path=f"github.com/{pr_data['org']}/{pr_data['repo']}/pull/{pr_number}",
+            source_url=pr_data["url"],
+            doc_type="external_doc",
+            component_tag="github_pr",
+            chunk_index=0,
+            git_blame_author=pr_data["author"],
+            last_updated="",
+            version=pr_data["state"],
+            staleness_ttl_flag=False,
+            content_hash=hashlib.md5(pr_data["context_text"].encode()).hexdigest(),
+        )
+
+        answer = await generate_grounded_answer(query, [pr_chunk], http_client)
+        total_ms = round((time.perf_counter() - t_start) * 1000, 1)
+        pr_diag = PipelineDiagnostics(
+            hyde_ms=0,
+            bm25_hits=0,
+            knn_hits=0,
+            rrf_candidates=1,
+            reranked_count=1,
+            dropped_below_threshold=0,
+            total_ms=total_ms,
+        )
+        log.info(
+            "PR #%d summarised: %d chars | %.0f ms",
+            pr_number,
+            len(answer),
+            total_ms,
+        )
+        return "", answer, [pr_chunk], pr_diag
+
+    # ── Normal RAG pipeline ───────────────────────────────────────────────────
     index = settings.elasticsearch.index_name
     # ── Stage 1: HyDE (with quota fallback) ──────────────────────────────────
     t_hyde_start = time.perf_counter()
@@ -440,8 +503,6 @@ async def execute_pipeline(
 
     # ── Stage 6: Answer generation ────────────────────────────────────────────
     # generate_grounded_answer handles the watsonx→Groq fallback internally.
-    from ask_z.api.generator import generate_grounded_answer
-
     if not chunks:
         answer = (
             "⚠ No relevant context found after reranking. "
