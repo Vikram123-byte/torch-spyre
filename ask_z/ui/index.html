@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ask-Z — IBM Z &amp; Spyre Knowledge Assistant</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #ffffff;
+    --surface: #f7f8fa;
+    --border: #e5e7eb;
+    --text: #1f2328;
+    --muted: #57606a;
+    --accent: #3b82d4;
+    --warn: #b45309;
+    --warn-bg: #fffbeb;
+    --code-bg: #f3f4f6;
+    --radius: 6px;
+    --font: -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+
+  body { font-family: var(--font); font-size: 14px; line-height: 1.6;
+         background: var(--bg); color: var(--text); min-height: 100vh;
+         display: flex; flex-direction: column; }
+
+  header { border-bottom: 1px solid var(--border); padding: 14px 24px;
+           display: flex; align-items: center; gap: 12px; background: var(--bg); }
+  header h1 { font-size: 16px; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; margin-left: auto; }
+
+  .layout { display: flex; flex: 1; min-height: 0; }
+
+  /* ── Sidebar ── */
+  .sidebar { width: 240px; border-right: 1px solid var(--border);
+             background: var(--surface); padding: 16px; flex-shrink: 0;
+             display: flex; flex-direction: column; gap: 20px; overflow-y: auto; }
+  .sidebar h2 { font-size: 11px; font-weight: 600; text-transform: uppercase;
+                letter-spacing: .06em; color: var(--muted); }
+  .sidebar label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .sidebar input[type=number], .sidebar input[type=range] {
+    width: 100%; padding: 5px 8px; border: 1px solid var(--border);
+    border-radius: var(--radius); background: var(--bg); font-size: 13px; color: var(--text); }
+  .sidebar input[type=range] { padding: 0; cursor: pointer; }
+  .val-display { font-size: 12px; color: var(--accent); font-weight: 500; }
+  .sidebar .history-list { display: flex; flex-direction: column; gap: 4px; }
+  .history-item { padding: 5px 8px; border-radius: var(--radius); cursor: pointer;
+                  font-size: 12px; color: var(--muted); border: 1px solid transparent;
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .history-item:hover { background: var(--border); color: var(--text); }
+
+  /* ── Main ── */
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  .query-bar { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; }
+  .query-bar textarea { flex: 1; resize: none; height: 56px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    font-family: var(--font); font-size: 14px; color: var(--text);
+    background: var(--bg); line-height: 1.5; }
+  .query-bar textarea:focus { outline: none; border-color: var(--accent); }
+  .query-bar button { padding: 0 20px; background: var(--accent); color: #fff;
+    border: none; border-radius: var(--radius); font-size: 14px; font-weight: 500;
+    cursor: pointer; white-space: nowrap; }
+  .query-bar button:disabled { opacity: .5; cursor: not-allowed; }
+
+  .results { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex;
+             flex-direction: column; gap: 20px; }
+
+  /* ── Placeholder ── */
+  .placeholder { flex: 1; display: flex; flex-direction: column; align-items: center;
+                 justify-content: center; gap: 10px; color: var(--muted); }
+  .placeholder p { font-size: 13px; }
+
+  /* ── Loading ── */
+  .spinner { width: 20px; height: 20px; border: 2px solid var(--border);
+             border-top-color: var(--accent); border-radius: 50%;
+             animation: spin .7s linear infinite; flex-shrink: 0; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-row { display: flex; align-items: center; gap: 10px;
+                 color: var(--muted); font-size: 13px; padding: 8px 0; }
+
+  /* ── Answer card ── */
+  .answer-card { border: 1px solid var(--border); border-radius: var(--radius);
+                 overflow: hidden; }
+  .answer-card .card-head { background: var(--surface); padding: 8px 14px;
+    border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+    display: flex; align-items: center; gap: 8px; }
+  .answer-card .card-body { padding: 14px; font-size: 13px; line-height: 1.7;
+                             white-space: pre-wrap; word-break: break-word; }
+  .answer-card .card-body.warn { background: var(--warn-bg); color: var(--warn); }
+
+  /* ── HyDE hypothesis ── */
+  .hyde-card { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .hyde-card .card-head { background: var(--surface); padding: 8px 14px;
+    border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .hyde-card .card-body { padding: 12px 14px; font-size: 12px; color: var(--muted);
+                           font-style: italic; white-space: pre-wrap; }
+
+  /* ── Diagnostics bar ── */
+  .diag-bar { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 11px;
+              color: var(--muted); padding: 6px 0; border-top: 1px solid var(--border);
+              margin-top: 4px; }
+  .diag-bar span b { color: var(--text); }
+
+  /* ── Chunks ── */
+  .chunks-header { font-size: 11px; font-weight: 600; text-transform: uppercase;
+                   letter-spacing: .06em; color: var(--muted); }
+  .chunk { border: 1px solid var(--border); border-radius: var(--radius);
+           overflow: hidden; }
+  .chunk-head { background: var(--surface); padding: 7px 12px;
+    border-bottom: 1px solid var(--border); display: flex; align-items: center;
+    gap: 10px; flex-wrap: wrap; }
+  .chunk-rank { background: var(--accent); color: #fff; font-size: 10px;
+                font-weight: 700; padding: 1px 6px; border-radius: 10px; flex-shrink: 0; }
+  .chunk-path { font-size: 12px; font-weight: 500; color: var(--text);
+                flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chunk-scores { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: 3px;
+           background: var(--code-bg); color: var(--muted); border: 1px solid var(--border); }
+  .badge.code { background: #e8f4fd; color: #1a6fa8; border-color: #c2ddf5; }
+  .badge.doc  { background: #e8f7ee; color: #1a7a3c; border-color: #b8e8c8; }
+  .badge.ADR  { background: #f5e8fd; color: #7a1aae; border-color: #dbb8f5; }
+  .badge.test { background: #fff3e0; color: #9a5000; border-color: #f5d9a8; }
+  .badge.external_doc { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+  .chunk-meta { padding: 4px 12px 6px; font-size: 11px; color: var(--muted);
+                background: var(--surface); border-bottom: 1px solid var(--border);
+                display: flex; flex-wrap: wrap; gap: 4px 16px; }
+  .chunk-body { padding: 10px 12px; }
+  .chunk-body pre { background: var(--code-bg); border-radius: 4px; padding: 10px;
+    font-size: 12px; line-height: 1.5; overflow-x: auto; white-space: pre;
+    border: 1px solid var(--border); max-height: 260px; overflow-y: auto; }
+  .chunk-body p { font-size: 13px; line-height: 1.6; white-space: pre-wrap;
+                  word-break: break-word; }
+  details summary { cursor: pointer; user-select: none; }
+
+  /* ── Inline code in answers ── */
+  .card-body code { background: var(--code-bg); border: 1px solid var(--border);
+                    border-radius: 3px; padding: 1px 5px; font-size: 12px;
+                    font-family: "SFMono-Regular", Consolas, monospace; }
+  .card-body pre  { background: var(--code-bg); border: 1px solid var(--border);
+                    border-radius: var(--radius); padding: 12px; font-size: 12px;
+                    overflow-x: auto; margin: 8px 0; white-space: pre;
+                    font-family: "SFMono-Regular", Consolas, monospace; }
+  .card-body ul   { padding-left: 20px; margin: 6px 0; }
+  .card-body li   { margin: 2px 0; }
+
+  /* ── Error ── */
+  .error-card { border: 1px solid #fca5a5; border-radius: var(--radius);
+                background: #fff5f5; padding: 14px; font-size: 13px; color: #b91c1c; }
+</style>
+</head>
+<body>
+
+<header>
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2">
+    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35M11 8v6M8 11h6"/>
+  </svg>
+  <h1>Ask-Z</h1>
+  <span class="sub">IBM Z &amp; Spyre Knowledge Assistant — RAG pipeline</span>
+</header>
+
+<div class="layout">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div>
+      <h2>Options</h2>
+      <div style="margin-top:12px">
+        <label>Top-K chunks <span class="val-display" id="topk-val">5</span></label>
+        <input type="range" id="topk" min="1" max="20" value="5">
+      </div>
+      <div style="margin-top:12px">
+        <label>Rerank threshold <span class="val-display" id="thresh-val">0.00</span></label>
+        <input type="range" id="thresh" min="-1" max="1" step="0.05" value="0">
+      </div>
+    </div>
+
+    <div>
+      <h2>Recent queries</h2>
+      <div class="history-list" id="history"></div>
+    </div>
+
+    <div>
+      <h2>Index status</h2>
+      <div id="es-status" style="font-size:12px; color:var(--muted)">Checking…</div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main>
+    <div class="query-bar">
+      <textarea id="query-input" placeholder="Ask about IBM Z, Spyre ops, model_utils, compiler pipeline…" rows="2"></textarea>
+      <button id="ask-btn">Ask</button>
+    </div>
+
+    <div class="results" id="results">
+      <div class="placeholder" id="placeholder">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--border)" stroke-width="1.5">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        <p>Ask a question about IBM Z or Spyre to get started.</p>
+        <p style="font-size:12px">Try: "What does model_utils.py do?" or "How does Spyre handle weight layout?"</p>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const API = '/api/v1';
+
+// ── Controls ───────────────────────────────────────────────────────────────────
+const topkEl   = document.getElementById('topk');
+const threshEl = document.getElementById('thresh');
+const topkVal  = document.getElementById('topk-val');
+const threshVal= document.getElementById('thresh-val');
+topkEl.addEventListener('input',   () => topkVal.textContent  = topkEl.value);
+threshEl.addEventListener('input', () => threshVal.textContent= parseFloat(threshEl.value).toFixed(2));
+
+// ── History ────────────────────────────────────────────────────────────────────
+const historyEl = document.getElementById('history');
+const _history  = [];
+function addHistory(q) {
+  if (_history.includes(q)) return;
+  _history.unshift(q);
+  if (_history.length > 8) _history.pop();
+  historyEl.innerHTML = _history.map(h =>
+    `<div class="history-item" title="${esc(h)}">${esc(h)}</div>`
+  ).join('');
+  historyEl.querySelectorAll('.history-item').forEach((el, i) => {
+    el.addEventListener('click', () => {
+      document.getElementById('query-input').value = _history[i];
+    });
+  });
+}
+
+// ── ES health ─────────────────────────────────────────────────────────────────
+async function checkHealth() {
+  const el = document.getElementById('es-status');
+  try {
+    const r = await fetch('/health/ready');
+    if (r.ok) {
+      const d = await r.json();
+      el.innerHTML = `<span style="color:#1a7a3c">● Ready</span><br>ES ${d.elasticsearch}<br>Index: ${d.index}`;
+    } else {
+      el.innerHTML = `<span style="color:#b91c1c">● ES unreachable</span>`;
+    }
+  } catch {
+    el.innerHTML = `<span style="color:#b45309">● API offline</span>`;
+  }
+}
+checkHealth();
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Minimal markdown → HTML: bold, inline code, fenced code blocks, bullet lists.
+function mdToHtml(s) {
+  // fenced code blocks
+  s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, _lang, code) =>
+    `<pre>${esc(code.trimEnd())}</pre>`);
+  // inline code
+  s = s.replace(/`([^`]+)`/g, (_, c) => `<code>${esc(c)}</code>`);
+  // bold
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  // bullet list lines
+  s = s.replace(/^[ \t]*[•\-\*] (.+)$/gm, '<li>$1</li>');
+  s = s.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
+  // paragraphs: double newline → <br><br>
+  s = s.replace(/\n{2,}/g, '<br><br>').replace(/\n/g, '<br>');
+  return s;
+}
+
+function isCode(chunk) {
+  return chunk.doc_type === 'code' || chunk.file_path.endsWith('.py');
+}
+
+function renderChunk(c) {
+  const body = isCode(c)
+    ? `<pre>${esc(c.text)}</pre>`
+    : `<p>${esc(c.text)}</p>`;
+
+  const stale = c.staleness_ttl_flag
+    ? `<span style="color:var(--warn)">⚠ stale</span>` : '';
+
+  // Show just the filename for external docs (full path is too noisy),
+  // full relative path for repo files.
+  const displayPath = c.doc_type === 'external_doc'
+    ? c.file_path.split('/').pop()
+    : c.file_path;
+
+  // If there's a real source URL (not just the file path), make it a link.
+  const pathHtml = (c.source_url && c.source_url !== c.file_path)
+    ? `<a href="${esc(c.source_url)}" target="_blank" style="color:var(--accent);text-decoration:none"
+         title="Open source: ${esc(c.source_url)}">${esc(displayPath)} ↗</a>`
+    : `<span>${esc(displayPath)}</span>`;
+
+  return `
+    <div class="chunk">
+      <div class="chunk-head">
+        <span class="chunk-rank">#${c.rank}</span>
+        <span class="chunk-path" title="${esc(c.file_path)}">${pathHtml}</span>
+        <span class="badge ${esc(c.doc_type)}">${esc(c.doc_type)}</span>
+        <span class="chunk-scores">score ${c.score.toFixed(4)} · rrf ${c.rrf_score.toFixed(4)}</span>
+      </div>
+      <div class="chunk-meta">
+        <span>component: <b>${esc(c.component_tag)}</b></span>
+        <span>author: <b>${esc(c.git_blame_author || '—')}</b></span>
+        <span>updated: <b>${esc(c.last_updated || '—')}</b></span>
+        <span>version: <b>${esc(c.version || '—')}</b></span>
+        ${stale}
+      </div>
+      <div class="chunk-body">${body}</div>
+    </div>`;
+}
+
+function renderDiag(d) {
+  const knnNote = d.knn_hits === 0
+    ? ' <span style="color:var(--warn);font-size:10px">(BM25 only — quota)</span>' : '';
+  return `
+    <div class="diag-bar">
+      <span>HyDE <b>${d.hyde_ms} ms</b></span>
+      <span>BM25 hits <b>${d.bm25_hits}</b></span>
+      <span>KNN hits <b>${d.knn_hits}</b>${knnNote}</span>
+      <span>RRF candidates <b>${d.rrf_candidates}</b></span>
+      <span>reranked <b>${d.reranked_count}</b></span>
+      <span>dropped <b>${d.dropped_below_threshold}</b></span>
+      <span>total <b>${d.total_ms} ms</b></span>
+    </div>`;
+}
+
+// ── Submit ─────────────────────────────────────────────────────────────────────
+async function submit() {
+  const q = document.getElementById('query-input').value.trim();
+  if (!q) return;
+
+  const btn     = document.getElementById('ask-btn');
+  const results = document.getElementById('results');
+  btn.disabled  = true;
+
+  // Hide placeholder
+  const ph = document.getElementById('placeholder');
+  if (ph) ph.style.display = 'none';
+
+  // Loading indicator
+  const loadId = 'load-' + Date.now();
+  results.insertAdjacentHTML('afterbegin',
+    `<div class="loading-row" id="${loadId}"><div class="spinner"></div>Running pipeline…</div>`);
+
+  try {
+    const resp = await fetch(`${API}/query`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        query:            q,
+        top_k:            parseInt(topkEl.value, 10),
+        rerank_threshold: parseFloat(threshEl.value),
+      }),
+    });
+
+    const data = await resp.json();
+    document.getElementById(loadId)?.remove();
+
+    if (!resp.ok) {
+      results.insertAdjacentHTML('afterbegin',
+        `<div class="error-card"><b>${esc(data.error?.code || 'error')}</b>: ${esc(data.error?.message || JSON.stringify(data))}</div>`
+      );
+      return;
+    }
+
+    addHistory(q);
+
+    const quotaMode = data.answer.startsWith('⚠ No relevant context');
+    const noResults = data.answer.startsWith('⚠ No relevant context');
+    const hydeSkipped = data.hyde_hypothesis && data.hyde_hypothesis.startsWith('[HyDE skipped');
+
+    // ── Build result block ──────────────────────────────────────────────────
+    let html = `<div style="display:flex;flex-direction:column;gap:12px;border-top:2px solid var(--border);padding-top:16px">`;
+    html += `<div style="font-size:12px;color:var(--muted)">Query: <b>${esc(data.query)}</b></div>`;
+
+    if (quotaMode) {
+      const isRateLimit = data.answer.includes('429') ||
+        (data.diagnostics.hyde_ms > 500 && data.diagnostics.knn_hits === 0);
+      const bannerMsg = isRateLimit
+        ? '<b>watsonx.ai rate limit (HTTP 429)</b> — too many requests per minute. Wait 60 seconds and retry.'
+        : '<b>watsonx.ai quota exhausted (HTTP 403)</b> — monthly token quota reached. Quota resets monthly on your IBM Cloud account.';
+      html += `<div style="
+        background:var(--warn-bg);border:1px solid #fde68a;border-radius:var(--radius);
+        padding:10px 14px;font-size:13px;color:var(--warn);display:flex;gap:8px;align-items:flex-start">
+        <span style="flex-shrink:0">⚠</span>
+        <span>${bannerMsg}
+        Retrieval is fully functional; the top matching source chunks are shown below.</span>
+      </div>`;
+    } else if (noResults) {
+      html += `<div style="
+        background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+        padding:10px 14px;font-size:13px;color:var(--muted)">
+        No relevant chunks found above the rerank threshold. Try lowering the threshold or rephrasing.
+      </div>`;
+    } else {
+      // Normal LLM answer — render with light markdown.
+      html += `<div class="answer-card">
+        <div class="card-head">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Answer
+        </div>
+        <div class="card-body" style="font-size:13px;line-height:1.75">${mdToHtml(data.answer)}</div>
+      </div>`;
+    }
+
+    // HyDE hypothesis (collapsible, only when watsonx generated one)
+    if (data.hyde_hypothesis && !data.hyde_hypothesis.startsWith('[HyDE skipped')) {
+      html += `<details>
+        <summary style="font-size:11px;color:var(--muted);cursor:pointer">
+          HyDE hypothesis (synthetic query document used for KNN search)
+        </summary>
+        <div style="margin-top:6px;padding:10px 14px;background:var(--surface);
+          border:1px solid var(--border);border-radius:var(--radius);
+          font-size:12px;color:var(--muted);font-style:italic;line-height:1.6">
+          ${esc(data.hyde_hypothesis)}
+        </div>
+      </details>`;
+    }
+
+    // Diagnostics
+    html += renderDiag(data.diagnostics);
+
+    // Chunks
+    if (data.chunks.length > 0) {
+      html += `<div class="chunks-header">Source chunks (${data.chunks.length})</div>`;
+      html += data.chunks.map(renderChunk).join('');
+    } else if (!noResults) {
+      html += `<div style="font-size:13px;color:var(--muted)">No chunks returned above threshold.</div>`;
+    }
+
+    html += `</div>`;
+
+    results.insertAdjacentHTML('afterbegin', html);
+
+  } catch (err) {
+    document.getElementById(loadId)?.remove();
+    results.insertAdjacentHTML('afterbegin',
+      `<div class="error-card">Network error: ${esc(String(err))}</div>`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('ask-btn').addEventListener('click', submit);
+document.getElementById('query-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit();
+});
+</script>
+</body>
+</html>
