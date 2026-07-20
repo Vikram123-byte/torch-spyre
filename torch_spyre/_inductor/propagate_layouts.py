@@ -24,6 +24,7 @@ import torch
 from .logging_utils import get_inductor_logger
 from torch._inductor.ir import (
     ComputedBuffer,
+    DeviceCopy,
     ExternKernel,
     FallbackKernel,
     FixedLayout,
@@ -42,6 +43,7 @@ from torch._inductor.graph import GraphLowering
 from torch._inductor.scheduler import SchedulerNode
 from torch._inductor.virtualized import V
 
+from . import config
 from torch_spyre._C import (
     ElementArrangement,
     SpyreTensorLayout,
@@ -49,10 +51,10 @@ from torch_spyre._C import (
     get_elem_in_stick,
 )
 from .errors import Unsupported
-from . import config
 from .constants import (
     BATCH_MATMUL_OP,
     COPY_BACK_CANDIDATE_ATTR,
+    DEVICE_NAME,
     ELIDED_COPY_BACK_ATTR,
     REDUCTIONS_NON_STICK_DIM_ONLY,
     STAGGERED_EAS,
@@ -81,6 +83,7 @@ from .views import matching_dim
 # ---------------------------------------------------------------------------
 
 logger = get_inductor_logger("propagate_layouts")
+
 
 prims = torch.ops.prims
 aten = torch.ops.aten
@@ -362,7 +365,12 @@ def _single_arg_op_layout(
             # alignment. For example, 4x16 FP16 has 48 elements of padding (64 total),
             # which becomes 64 FP32 elements when converted. We need to reflect this
             # in the output host size so the constructor creates the correct device layout.
-            in_stick_expr = device_coordinates(stl, dep, None)[-1]
+            try:
+                in_stick_expr = device_coordinates(stl, dep, None)[-1]
+            except Unsupported:
+                # Staggered-EA candidate whose physical stick depth differs from
+                # elems_per_stick — not a valid input for this conversion path.
+                return []
             if not is_stick_expr_offset_free(in_stick_expr, stl.elems_per_stick()):
                 return []
 
@@ -879,13 +887,26 @@ def _multi_arg_pointwise_layouts(
         for stick_expr in sorted(offset_free_stick_exprs, key=iter_var_id):
             _try_stick_dim(_pick_stick_dim(stick_expr, out_coords))
 
-    # Try alternative layouts if no valid layouts found
-    if not results:
-        for alt_stick_dim in range(len(output.size) - 1):
-            # TODO: Support dimensions with size not divisible by stick_size via padding (See #1756)
-            if concretize_expr(output.size[alt_stick_dim]) % stick_size != 0:
-                continue
-            _try_stick_dim(alt_stick_dim)
+    # Always scan all dims so that dims absent from any input stick expression
+    # (e.g. the outer broadcast dim) are also offered as candidates. Deduplicate
+    # against layouts already produced by the input-stick loop above.
+    # Skip for staggered-EA ops: their output layout is dictated by the staggered
+    # input EA and adding STANDARD candidates would corrupt downstream ops.
+    # EA omitted from key: the loop below is skipped for staggered ops, so all
+    # candidates added (and looked up) here use STANDARD EA — geometry suffices.
+    seen_keys = {(tuple(r.device_size), tuple(r.stride_map)) for r in results}
+    for alt_stick_dim in range(len(output.size)) if not staggered_inputs else []:
+        # TODO: Support dimensions with size not divisible by stick_size via padding (See #1756)
+        if concretize_expr(output.size[alt_stick_dim]) % stick_size != 0:
+            continue
+        pre_len = len(results)
+        _try_stick_dim(alt_stick_dim)
+        if len(results) > pre_len:
+            key = (tuple(results[-1].device_size), tuple(results[-1].stride_map))
+            if key in seen_keys:
+                results.pop()
+            else:
+                seen_keys.add(key)
 
     # LX in-place: promote a same-frame input's layout to FIRST so the beam
     # commits it on a cost tie, avoiding a free-but-in-place-defeating permutation
@@ -1231,9 +1252,19 @@ def _resolve_copy_back_candidates(operations: list[Operation]) -> None:
             continue
         if not isinstance(producer, ComputedBuffer):
             continue
-        if isinstance(producer.layout, MutationLayoutSHOULDREMOVE):
+        if not config.ignore_span_overflow_hints and isinstance(
+            producer.data, Pointwise
+        ):
+            # Layouts are still plain FixedLayout here (finalize_layouts
+            # hasn't run yet), so we can't yet tell whether this specific
+            # producer will actually get auto-tiled. Conservatively preserve
+            # the copy-back for any Pointwise producer while the feature is
+            # on, the same way the old (now-removed) chunk_large_tensors
+            # guard did: `config.chunk_large_tensors and
+            # isinstance(producer.data, Pointwise)`, with no layout-type
+            # check either.
             continue
-        if config.chunk_large_tensors and isinstance(producer.data, Pointwise):
+        if isinstance(producer.layout, MutationLayoutSHOULDREMOVE):
             continue
         if write_counts[source.name] != 1:
             continue
@@ -1245,6 +1276,11 @@ def _resolve_copy_back_candidates(operations: list[Operation]) -> None:
             continue
         producer_layouts = getattr(producer, "layouts", None)
         if not producer_layouts or target_stl not in producer_layouts:
+            continue
+        # Only elide when the producer has a single unambiguous layout. With
+        # multiple candidates the optimizer may not commit to target_stl, so
+        # eliding the copy would be incorrect.
+        if len(producer_layouts) != 1:
             continue
 
         producer.layout = copy_op.layout
@@ -1307,6 +1343,9 @@ def propagate_spyre_tensor_layouts(
             op.layouts = [generic_layout(op)]
             op.restick_cost_fn = AnyInNode.from_args()
         elif isinstance(op, ComputedBuffer):
+            layout = op.maybe_get_layout()
+            if layout is None or layout.device.type != DEVICE_NAME:
+                continue
             if isinstance(op.layout, MutationLayoutSHOULDREMOVE):
                 target = op.layout.target
                 while isinstance(target, ReinterpretView):
@@ -1390,6 +1429,14 @@ def propagate_spyre_tensor_layouts(
         elif isinstance(op, SpyreConstantFallback):
             op.layouts = [generic_layout(op)]
             op.restick_cost_fn = AnyInNode.from_args()
+        elif isinstance(op, DeviceCopy):
+            # spyre -> cpu: the output is a host tensor and carries no Spyre
+            #     layout. Leave `.layouts` unset.
+            # cpu -> spyre: the output is a fresh on-device buffer with no
+            #     inherited tiling, so give it a new device layout.
+            if op.get_layout().device.type == DEVICE_NAME:
+                op.layouts = [generic_layout(op)]
+                op.restick_cost_fn = AnyInNode.from_args()
         elif isinstance(op, ExternKernel):
             logger.warning(f"unhandled node type {type(op)}")
         else:
