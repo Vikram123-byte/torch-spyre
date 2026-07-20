@@ -29,12 +29,47 @@ from torch_spyre.profiler._ffdc import (
     REQUIRED_FIELDS,
     collect,
     get_diagnostic_report,
+    try_collect,
 )
 
 
 @pytest.fixture(autouse=True)
 def _enable_ffdc(monkeypatch):
     monkeypatch.setenv("USE_SPYRE_PROFILER", "1")
+
+
+def _stub_module(monkeypatch, name, **attrs):
+    """Insert a stub module; ``monkeypatch`` restores ``sys.modules`` after the test."""
+    import sys
+    import types
+
+    mod = types.ModuleType(name)
+    for k, v in attrs.items():
+        setattr(mod, k, v)
+    monkeypatch.setitem(sys.modules, name, mod)
+    return mod
+
+
+def _patch_collect_raises(monkeypatch):
+    """Force ``collect`` to raise so call sites exercise ``try_collect``."""
+    import importlib
+
+    ffdc_mod = importlib.import_module("torch_spyre.profiler._ffdc")
+
+    def boom(*_args, **_kwargs):
+        raise OSError("ffdc write failed")
+
+    monkeypatch.setattr(ffdc_mod, "collect", boom)
+    return ffdc_mod
+
+
+def _reimport(monkeypatch, name):
+    """Drop ``name`` from ``sys.modules`` and reimport; restore after the test."""
+    import importlib
+    import sys
+
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    return importlib.import_module(name)
 
 
 class TestFfdcCollect:
@@ -145,6 +180,12 @@ class TestFfdcCollect:
         assert report is not None
         assert report["_report_path"] is None
         assert report["collector"]["success"] is False
+
+    def test_try_collect_never_raises(self, monkeypatch):
+        # Hook contract: serialization/I/O failures must not mask the original
+        # exception that call sites are about to re-raise.
+        _patch_collect_raises(monkeypatch)
+        try_collect(ValueError("primary"), logger=None)
 
     def test_category_constants_match_report(self):
         for category in (
@@ -314,56 +355,38 @@ class TestFfdcCollect:
 
 
 class TestFfdcAsyncCompile:
-    def test_sdsc_dxp_failure_triggers_ffdc_collect(self, monkeypatch, tmp_path):
-        """dxp_standalone failure must call try_collect then re-raise.
-
-        Stubs inductor/extension imports so this runs without ``torch_spyre._C``.
-        Patch via ``importlib.import_module`` — ``torch_spyre.profiler`` is set
-        to ``None`` in ``torch_spyre/__init__.py`` when profiling is unavailable.
-        """
-        import importlib
+    def _load_async_compile(self, monkeypatch, tmp_path):
+        """Stub inductor/extension imports and return ``(mod, out_dir)``."""
         import logging
-        import subprocess
         import sys
-        import types
 
-        ffdc_mod = importlib.import_module("torch_spyre.profiler._ffdc")
-        calls: list[dict] = []
         out_dir = str(tmp_path / "bundle")
 
-        def fake_try_collect(exc, **kwargs):
-            calls.append(kwargs)
-
-        monkeypatch.setattr(ffdc_mod, "try_collect", fake_try_collect)
-
-        def _stub_module(name, **attrs):
-            mod = types.ModuleType(name)
-            for k, v in attrs.items():
-                setattr(mod, k, v)
-            sys.modules[name] = mod
-            return mod
-
-        inductor = _stub_module("torch_spyre._inductor")
+        inductor = _stub_module(monkeypatch, "torch_spyre._inductor")
         inductor.__path__ = []
         _stub_module(
+            monkeypatch,
             "torch_spyre._inductor.logging_utils",
             get_inductor_logger=lambda name: logging.getLogger(name),
         )
         _stub_module(
+            monkeypatch,
             "torch_spyre._inductor.op_spec",
             LoopSpec=object,
             OpSpec=object,
             UnimplementedOp=object,
             find_unimplemented=lambda specs: None,
         )
-        codegen = _stub_module("torch_spyre._inductor.codegen")
+        codegen = _stub_module(monkeypatch, "torch_spyre._inductor.codegen")
         codegen.__path__ = []
         _stub_module(
+            monkeypatch,
             "torch_spyre._inductor.codegen.bundle",
             generate_bundle=lambda *a, **k: None,
         )
         if "torch_spyre._C" not in sys.modules:
             _stub_module(
+                monkeypatch,
                 "torch_spyre._C",
                 launch_jobplan=lambda *a, **k: None,
                 prepare_kernel=lambda *a, **k: None,
@@ -375,16 +398,37 @@ class TestFfdcAsyncCompile:
                 self.code_dir = code_dir
 
         _stub_module(
+            monkeypatch,
             "torch_spyre.execution.kernel_runner",
             SpyreSDSCKernelRunner=_Runner,
             SpyreUnimplementedRunner=object,
         )
 
-        sys.modules.pop("torch_spyre.execution.async_compile", None)
-        mod = importlib.import_module("torch_spyre.execution.async_compile")
+        mod = _reimport(monkeypatch, "torch_spyre.execution.async_compile")
         monkeypatch.setattr(mod, "get_output_dir", lambda name: out_dir)
         monkeypatch.setattr(mod, "generate_bundle", lambda *a, **k: None)
         monkeypatch.setattr(mod, "find_unimplemented", lambda specs: None)
+        return mod, out_dir
+
+    def test_sdsc_dxp_failure_triggers_ffdc_collect(self, monkeypatch, tmp_path):
+        """dxp_standalone failure must call try_collect then re-raise.
+
+        Patch ``try_collect`` before reimporting ``async_compile`` so the
+        module-level binding picks up the fake (``torch_spyre.profiler`` may
+        be ``None`` on ``torch_spyre`` when profiling is unavailable).
+        """
+        import importlib
+        import subprocess
+
+        ffdc_mod = importlib.import_module("torch_spyre.profiler._ffdc")
+        calls: list[dict] = []
+
+        def fake_try_collect(exc, **kwargs):
+            calls.append(kwargs)
+
+        monkeypatch.setattr(ffdc_mod, "try_collect", fake_try_collect)
+
+        mod, out_dir = self._load_async_compile(monkeypatch, tmp_path)
 
         def fail_run(cmd, **kwargs):
             raise subprocess.CalledProcessError(1, cmd)
@@ -398,6 +442,83 @@ class TestFfdcAsyncCompile:
         assert calls[0]["failure_category"] == CATEGORY_COMPILE
         assert calls[0]["kernel_name"] == "test_kernel"
         assert calls[0]["code_dir"] == out_dir
+
+    def test_sdsc_dxp_failure_preserves_error_when_ffdc_raises(
+        self, monkeypatch, tmp_path
+    ):
+        """FFDC collection failure must not replace CalledProcessError.
+
+        Uses the real ``try_collect`` with a raising ``collect`` so the hook
+        path is covered end-to-end (not a fake that swallows by construction).
+        """
+        import subprocess
+
+        _patch_collect_raises(monkeypatch)
+        mod, _out_dir = self._load_async_compile(monkeypatch, tmp_path)
+
+        def fail_run(cmd, **kwargs):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr(mod.subprocess, "run", fail_run)
+
+        with pytest.raises(subprocess.CalledProcessError) as ei:
+            mod.SpyreAsyncCompile().sdsc("test_kernel", [])
+        assert ei.value.returncode == 1
+
+
+class TestFfdcKernelRunner:
+    def _load_kernel_runner(self, monkeypatch, *, launch_side_effect=None):
+        """Load ``kernel_runner`` without permanently shadowing real ``_C``.
+
+        Prefer patching the module's bound ``launch_jobplan`` / ``prepare_kernel``.
+        Stub ``_C`` only when it is absent (e.g. no extension on Mac).
+        """
+        import logging
+        import sys
+
+        def _launch(jobplan, args):
+            if launch_side_effect is not None:
+                raise launch_side_effect
+
+        if "torch_spyre._C" not in sys.modules:
+            _stub_module(
+                monkeypatch,
+                "torch_spyre._C",
+                launch_jobplan=_launch,
+                prepare_kernel=lambda path: "fake_jobplan",
+            )
+        if "torch_spyre._inductor" not in sys.modules:
+            inductor = _stub_module(monkeypatch, "torch_spyre._inductor")
+            inductor.__path__ = []
+        if "torch_spyre._inductor.logging_utils" not in sys.modules:
+            _stub_module(
+                monkeypatch,
+                "torch_spyre._inductor.logging_utils",
+                get_inductor_logger=lambda name: logging.getLogger(name),
+            )
+
+        mod = _reimport(monkeypatch, "torch_spyre.execution.kernel_runner")
+        monkeypatch.setattr(mod, "launch_jobplan", _launch)
+        monkeypatch.setattr(mod, "prepare_kernel", lambda path: "fake_jobplan")
+        return mod
+
+    def test_unimplemented_preserves_error_when_ffdc_raises(self, monkeypatch):
+        _patch_collect_raises(monkeypatch)
+        mod = self._load_kernel_runner(monkeypatch)
+        runner = mod.SpyreUnimplementedRunner("k", "aten::foo")
+
+        with pytest.raises(RuntimeError, match="unimplemented operation") as ei:
+            runner.run()
+        assert "aten::foo" in str(ei.value)
+
+    def test_launch_preserves_error_when_ffdc_raises(self, monkeypatch):
+        _patch_collect_raises(monkeypatch)
+        launch_exc = RuntimeError("launch_jobplan failed")
+        mod = self._load_kernel_runner(monkeypatch, launch_side_effect=launch_exc)
+        runner = mod.SpyreSDSCKernelRunner("k", "/tmp/code")
+
+        with pytest.raises(RuntimeError, match="launch_jobplan failed"):
+            runner.run()
 
 
 class TestFfdcPublicApi:

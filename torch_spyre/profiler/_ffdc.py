@@ -323,7 +323,6 @@ def collect(
 
     t0 = time.monotonic()
     collector_errors: list = []
-    missing_fields: list = []
 
     # --- metadata ---
     metadata: dict = {}
@@ -457,12 +456,11 @@ def try_collect(
     logger: Any = None,
     **kwargs: Any,
 ) -> None:
-    """Best-effort ``collect`` for failure hooks; does not propagate ordinary
-    collection exceptions to the caller.
+    """Best-effort ``collect`` for failure hooks; never raises.
 
-    Call sites must still wrap ``from torch_spyre.profiler._ffdc import ...``
-    in their own try/except so an import failure cannot mask the original
-    exception (same pattern as other best-effort hooks in this repo).
+    Call sites catch a primary failure, call this, then re-raise. Collection
+    errors must not replace that original exception. Import of this module is
+    not guarded here — a broken ``_ffdc`` import is a real bug.
     """
     try:
         collect(exc, **kwargs)

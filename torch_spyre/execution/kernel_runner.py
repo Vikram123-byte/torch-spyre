@@ -1,4 +1,4 @@
-# Copyright 2026 The Torch-Spyre Authors.
+# Copyright 2025 The Torch-Spyre Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,11 @@
 import torch
 from torch_spyre._C import launch_jobplan, prepare_kernel
 from torch_spyre._inductor.logging_utils import get_inductor_logger
+from torch_spyre.profiler._ffdc import (
+    CATEGORY_RUNTIME_LAUNCH,
+    CATEGORY_UNIMPLEMENTED,
+    try_collect,
+)
 
 logger = get_inductor_logger("kernel_runner")
 
@@ -31,21 +36,12 @@ class SpyreUnimplementedRunner:
                 f" unimplemented operation {self.op}"
             )
         except RuntimeError as exc:
-            # Guard import+collect together so FFDC never masks the original error.
-            try:
-                from torch_spyre.profiler._ffdc import (
-                    CATEGORY_UNIMPLEMENTED,
-                    try_collect,
-                )
-
-                try_collect(
-                    exc,
-                    logger=logger,
-                    failure_category=CATEGORY_UNIMPLEMENTED,
-                    kernel_name=self.kernel_name,
-                )
-            except Exception:
-                logger.debug("FFDC collection failed", exc_info=True)
+            try_collect(
+                exc,
+                logger=logger,
+                failure_category=CATEGORY_UNIMPLEMENTED,
+                kernel_name=self.kernel_name,
+            )
             raise
 
 
@@ -62,19 +58,11 @@ class SpyreSDSCKernelRunner:
             try:
                 launch_jobplan(self.jobplan, args)
             except Exception as exc:
-                try:
-                    from torch_spyre.profiler._ffdc import (
-                        CATEGORY_RUNTIME_LAUNCH,
-                        try_collect,
-                    )
-
-                    try_collect(
-                        exc,
-                        logger=logger,
-                        failure_category=CATEGORY_RUNTIME_LAUNCH,
-                        kernel_name=self.kernel_name,
-                        code_dir=self.code_dir,
-                    )
-                except Exception:
-                    logger.debug("FFDC collection failed", exc_info=True)
+                try_collect(
+                    exc,
+                    logger=logger,
+                    failure_category=CATEGORY_RUNTIME_LAUNCH,
+                    kernel_name=self.kernel_name,
+                    code_dir=self.code_dir,
+                )
                 raise

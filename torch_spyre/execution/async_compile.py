@@ -1,4 +1,4 @@
-# Copyright 2026 The Torch-Spyre Authors.
+# Copyright 2025 The Torch-Spyre Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@ from torch_spyre._inductor.op_spec import (
     find_unimplemented,
 )
 from torch_spyre._inductor.codegen.bundle import generate_bundle
+from torch_spyre.profiler._ffdc import CATEGORY_COMPILE, try_collect
 from .kernel_runner import SpyreSDSCKernelRunner, SpyreUnimplementedRunner
 
 logger = get_inductor_logger("sdsc_compile")
@@ -81,21 +82,13 @@ class SpyreAsyncCompile(AsyncCompile):
             try:
                 subprocess.run(["dxp_standalone", "-d", output_dir], check=True)
             except Exception as exc:
-                try:
-                    from torch_spyre.profiler._ffdc import (
-                        CATEGORY_COMPILE,
-                        try_collect,
-                    )
-
-                    try_collect(
-                        exc,
-                        logger=logger,
-                        failure_category=CATEGORY_COMPILE,
-                        kernel_name=kernel_name,
-                        code_dir=output_dir,
-                    )
-                except Exception:
-                    logger.debug("FFDC collection failed", exc_info=True)
+                try_collect(
+                    exc,
+                    logger=logger,
+                    failure_category=CATEGORY_COMPILE,
+                    kernel_name=kernel_name,
+                    code_dir=output_dir,
+                )
                 raise
 
         return SpyreSDSCKernelRunner(kernel_name, output_dir)
