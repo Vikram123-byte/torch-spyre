@@ -27,6 +27,7 @@ Usage:
     report = collect(exc, failure_category="compile")
 """
 
+import functools
 import itertools
 import json
 import os
@@ -467,6 +468,39 @@ def try_collect(
     except Exception:
         if logger is not None:
             logger.debug("FFDC collection failed", exc_info=True)
+
+
+def with_ffdc(
+    failure_category: str,
+    logger: Any,
+    kernel_name_attr: str = "kernel_name",
+    code_dir_attr: Optional[str] = "code_dir",
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """Decorator: wrap a runner method with FFDC capture, then re-raise.
+
+    Reads ``self.{kernel_name_attr}`` and optionally ``self.{code_dir_attr}``.
+    """
+
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @functools.wraps(func)
+        def wrapper(self: Any, *args: Any, **kwargs: Any) -> T:
+            try:
+                return func(self, *args, **kwargs)
+            except Exception as exc:
+                extra: dict[str, Any] = {
+                    "failure_category": failure_category,
+                    "logger": logger,
+                }
+                if hasattr(self, kernel_name_attr):
+                    extra["kernel_name"] = getattr(self, kernel_name_attr)
+                if code_dir_attr and hasattr(self, code_dir_attr):
+                    extra["code_dir"] = getattr(self, code_dir_attr)
+                try_collect(exc, **extra)
+                raise
+
+        return wrapper
+
+    return decorator
 
 
 def get_diagnostic_report(
