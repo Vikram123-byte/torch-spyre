@@ -106,10 +106,8 @@ The user may pass arguments to customize the output:
    |---|---|
    | CI failure (`statusCheckRollup` contains `FAILURE`) | **Blockers** |
    | `isDraft == true` | **WIP** — not a blocker |
-   | `reviewDecision == "CHANGES_REQUESTED"` and latest commit
-     `committedDate > <ISO_TIMESTAMP>` | **Awaiting Re-Review** |
-   | `reviewDecision == "CHANGES_REQUESTED"` but latest commit not in
-     window | Skip (stale; omit unless user asks) |
+   | `reviewDecision == "CHANGES_REQUESTED"` and latest commit `committedDate > <ISO_TIMESTAMP>` | **Awaiting Re-Review** |
+   | `reviewDecision == "CHANGES_REQUESTED"` but latest commit not in window | Skip (stale; omit unless user asks) |
    | `reviewDecision` is `REVIEW_REQUIRED`, `null`, or pending (non-draft) | **Blockers** — awaiting first review |
    | `reviewDecision == "APPROVED"` and CI passing | Not a blocker |
 
