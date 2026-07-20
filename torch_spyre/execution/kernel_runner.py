@@ -1,4 +1,4 @@
-# Copyright 2025 The Torch-Spyre Authors.
+# Copyright 2026 The Torch-Spyre Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import torch
-from torch_spyre._C import prepare_kernel, launch_jobplan
+from torch_spyre._C import launch_jobplan, prepare_kernel
 from torch_spyre._inductor.logging_utils import get_inductor_logger
 
 logger = get_inductor_logger("kernel_runner")
@@ -25,9 +25,28 @@ class SpyreUnimplementedRunner:
         self.op = op
 
     def run(self, *args, **kw_args):
-        raise RuntimeError(
-            f"Invoked {self.kernel_name} which contains unimplemented operation {self.op}"
-        )
+        try:
+            raise RuntimeError(
+                f"Invoked {self.kernel_name} which contains"
+                f" unimplemented operation {self.op}"
+            )
+        except RuntimeError as exc:
+            # Guard import+collect together so FFDC never masks the original error.
+            try:
+                from torch_spyre.profiler._ffdc import (
+                    CATEGORY_UNIMPLEMENTED,
+                    try_collect,
+                )
+
+                try_collect(
+                    exc,
+                    logger=logger,
+                    failure_category=CATEGORY_UNIMPLEMENTED,
+                    kernel_name=self.kernel_name,
+                )
+            except Exception:
+                logger.debug("FFDC collection failed", exc_info=True)
+            raise
 
 
 class SpyreSDSCKernelRunner:
@@ -40,4 +59,22 @@ class SpyreSDSCKernelRunner:
         logger.info("RUN: %s %s", self.kernel_name, self.code_dir)
 
         with torch.profiler.record_function(f"launch_jobplan:{self.kernel_name}"):
-            launch_jobplan(self.jobplan, args)
+            try:
+                launch_jobplan(self.jobplan, args)
+            except Exception as exc:
+                try:
+                    from torch_spyre.profiler._ffdc import (
+                        CATEGORY_RUNTIME_LAUNCH,
+                        try_collect,
+                    )
+
+                    try_collect(
+                        exc,
+                        logger=logger,
+                        failure_category=CATEGORY_RUNTIME_LAUNCH,
+                        kernel_name=self.kernel_name,
+                        code_dir=self.code_dir,
+                    )
+                except Exception:
+                    logger.debug("FFDC collection failed", exc_info=True)
+                raise

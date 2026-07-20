@@ -191,6 +191,10 @@ def make_spyre_module() -> types.ModuleType:
     mod._is_compiled = lambda: True
     mod.memory = memory
 
+    from torch_spyre.profiler._ffdc import get_diagnostic_report
+
+    mod.get_diagnostic_report = get_diagnostic_report
+
     import torch  # noqa: E402
 
     mod.get_amp_supported_dtype = lambda: [torch.float16, torch.bfloat16]
