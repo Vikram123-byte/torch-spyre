@@ -291,22 +291,43 @@ FFDC (First Failure Data Capture)
 
 .. function:: torch.spyre.get_diagnostic_report(output_dir=None) -> dict | None
 
-   Return the most recent FFDC diagnostic report, or ``None`` if no reports
-   exist. Reports are written automatically when a failure is captured and
-   ``USE_SPYRE_PROFILER=1`` is set.
+   Return the most recent FFDC diagnostic report written by the torch-spyre
+   failure hooks, or ``None`` if no report exists.
 
-   Args:
-      output_dir: Directory to search. Defaults to
-         ``~/.cache/torch/inductor/torch-spyre/ffdc_reports`` (respecting
-         ``TORCHINDUCTOR_CACHE_DIR``), with a fallback to the system temp dir.
+   Reports are JSON documents capturing exception metadata (``failure``),
+   environment variables (``environment``), compiler artifact paths
+   (``artifacts``), runtime context (``runtime``), hardware availability
+   (``hardware_state``), and collector completeness (``collector``). The
+   returned dict also includes ``_report_path`` with the absolute path of the
+   loaded report file.
 
-   Example::
+   Reports are written automatically when a failure is captured and
+   ``USE_SPYRE_PROFILER=1`` is set. Retrieval via this function does not
+   require that environment variable.
+
+   :param output_dir: Directory to search. If ``None``, uses the default
+       Inductor cache location
+       (``~/.cache/torch/inductor/torch-spyre/ffdc_reports``, respecting
+       ``TORCHINDUCTOR_CACHE_DIR``), falling back to the system temp directory
+       when the cache is unavailable.
+   :type output_dir: str, optional
+
+   .. code-block:: python
 
       import torch
+      import torch_spyre
 
-      report = torch.spyre.get_diagnostic_report()
-      if report is not None:
-          print(report["failure"]["category"], report["failure"]["message"])
+      try:
+          compiled = torch.compile(model, backend="spyre")
+          compiled(inputs)
+      except Exception:
+          report = torch.spyre.get_diagnostic_report()
+          if report is not None:
+              print(report["failure"]["category"])
+              print(report["_report_path"])
+
+   The same function is also available as
+   ``torch_spyre.profiler.get_diagnostic_report``.
 
 Tensor Operations
 -----------------

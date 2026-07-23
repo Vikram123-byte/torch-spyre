@@ -16,6 +16,8 @@ import os
 import threading
 import types
 import importlib
+from typing import Optional
+
 import torch
 
 from .constants import DEVICE_NAME, DISTRIBUTED_BACKEND_NAME
@@ -191,7 +193,13 @@ def make_spyre_module() -> types.ModuleType:
     mod._is_compiled = lambda: True
     mod.memory = memory
 
-    from torch_spyre.profiler._ffdc import get_diagnostic_report
+    def get_diagnostic_report(
+        output_dir: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Return the most recent FFDC report as a dict, or None if none exist."""
+        from torch_spyre.profiler._ffdc import get_diagnostic_report as _get_report
+
+        return _get_report(output_dir)
 
     mod.get_diagnostic_report = get_diagnostic_report
 
