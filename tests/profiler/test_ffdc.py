@@ -42,7 +42,7 @@ from torch_spyre.profiler._ffdc import (
 _UNCLAIMED_PRIVATEUSE1_NAMES = frozenset({"privateuse1", "privateuseone"})
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(scope="module")
 def register_torch_spyre_public_api():
     """Ensure ``torch.spyre.get_diagnostic_report`` for public API tests.
 
@@ -50,6 +50,10 @@ def register_torch_spyre_public_api():
     When another test has already renamed PrivateUse1, unconditional rename
     raises during module setup. Check the current backend name first; only
     rename when the slot is still unclaimed.
+
+    Opt-in via ``@pytest.mark.usefixtures`` on ``TestFfdcPublicApi`` so a
+    claimed PrivateUse1 slot skips only public-API coverage, not retrieval
+    tests that call ``get_diagnostic_report`` directly.
     """
     if hasattr(torch, DEVICE_NAME):
         return
@@ -663,6 +667,7 @@ class TestFfdcKernelRunner:
             runner.run()
 
 
+@pytest.mark.usefixtures("register_torch_spyre_public_api")
 class TestFfdcPublicApi:
     def test_torch_spyre_exposes_get_diagnostic_report(self):
         assert hasattr(torch.spyre, "get_diagnostic_report")
