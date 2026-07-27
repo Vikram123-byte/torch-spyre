@@ -37,12 +37,36 @@ from torch_spyre.profiler._ffdc import (
     try_collect,
 )
 
+# Default names for an unclaimed PrivateUse1 slot (PyTorch 2.11 uses
+# ``privateuseone``; older builds may return ``privateuse1``).
+_UNCLAIMED_PRIVATEUSE1_NAMES = frozenset({"privateuse1", "privateuseone"})
+
 
 @pytest.fixture(scope="module", autouse=True)
 def register_torch_spyre_public_api():
-    if not hasattr(torch, "spyre"):
-        torch.utils.rename_privateuse1_backend(DEVICE_NAME)
+    """Ensure ``torch.spyre.get_diagnostic_report`` for public API tests.
+
+    Installed packages autoload spyre via the ``torch_spyre`` entry point.
+    When another test has already renamed PrivateUse1, unconditional rename
+    raises during module setup. Check the current backend name first; only
+    rename when the slot is still unclaimed.
+    """
+    if hasattr(torch, DEVICE_NAME):
+        return
+
+    backend_name = torch._C._get_privateuse1_backend_name()
+    if backend_name == DEVICE_NAME:
         torch._register_device_module(DEVICE_NAME, make_spyre_module())
+        return
+
+    if backend_name not in _UNCLAIMED_PRIVATEUSE1_NAMES:
+        pytest.skip(
+            f"PrivateUse1 already claimed as {backend_name!r}; "
+            "skipping torch.spyre public API tests."
+        )
+
+    torch.utils.rename_privateuse1_backend(DEVICE_NAME)
+    torch._register_device_module(DEVICE_NAME, make_spyre_module())
 
 
 @pytest.fixture(autouse=True)
