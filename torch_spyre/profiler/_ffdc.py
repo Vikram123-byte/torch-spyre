@@ -137,6 +137,40 @@ def _default_output_dir() -> Path:
         return Path(tempfile.gettempdir()) / "torch-spyre-ffdc"
 
 
+def _is_safe_category_char(c: str) -> bool:
+    """Return True if ``c`` is allowed in an FFDC report category filename."""
+    return c.isascii() and (c.isalnum() or c in "_-")
+
+
+def _report_sort_key(report_path: Path) -> Optional[str]:
+    """Return the timestamp sort key for a valid FFDC filename, else None."""
+    parts = report_path.stem.rsplit("_", 3)
+    if len(parts) != 4:
+        return None
+
+    category_prefix, ts_seconds, ts_micros, pid = parts
+    if not category_prefix.startswith("ffdc_"):
+        return None
+    category = category_prefix.removeprefix("ffdc_")
+    if not category or not all(_is_safe_category_char(c) for c in category):
+        return None
+    if len(ts_seconds) != 15 or ts_seconds[8] != "T":
+        return None
+    if not (
+        ts_seconds.isascii() and ts_seconds[:8].isdigit() and ts_seconds[9:15].isdigit()
+    ):
+        return None
+    if not (ts_micros.isascii() and ts_micros.isdigit() and len(ts_micros) == 6):
+        return None
+    if not (pid.isascii() and pid.isdigit()):
+        return None
+    try:
+        datetime.strptime(f"{ts_seconds}_{ts_micros}", "%Y%m%dT%H%M%S_%f")
+    except ValueError:
+        return None
+    return f"{ts_seconds}_{ts_micros}"
+
+
 _ENV_KEYS = [
     "TORCH_COMPILE_DEBUG",
     "TORCH_SPYRE_DEBUG",
@@ -300,6 +334,9 @@ def collect(
     profiler). When disabled, returns the same top-level schema with empty
     sections and no filesystem or thread work.
     """
+    if not failure_category:
+        failure_category = CATEGORY_UNKNOWN
+
     if not _is_ffdc_enabled():
         return {
             "metadata": {},
@@ -436,7 +473,7 @@ def collect(
         out_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%f")
         safe_category = "".join(
-            c if c.isalnum() or c in "_-" else "_" for c in failure_category
+            c if _is_safe_category_char(c) else "_" for c in failure_category
         )[:32]
         report_path = out_dir / f"ffdc_{safe_category}_{ts}_{os.getpid()}.json"
         with open(report_path, "w") as f:
@@ -517,7 +554,8 @@ def get_diagnostic_report(
     Returns:
         Parsed JSON dict of the most recent readable report, or None. The
         returned dict includes ``_report_path`` with the absolute path of the
-        loaded file. Corrupted, non-UTF-8, or unreadable report files are skipped.
+        loaded file. Corrupted, non-UTF-8, unreadable, or invalidly named
+        report files are skipped.
     """
     search_dir = Path(output_dir) if output_dir else _default_output_dir()
     if not search_dir.exists():
@@ -529,20 +567,19 @@ def get_diagnostic_report(
     # report would outrank a fresh "compile" report.  Sorting by st_mtime fails
     # on filesystems with 1-second resolution (same-second writes are misordered).
     # rsplit from the right handles category names that contain underscores
-    # (e.g. runtime_launch).  maxsplit=3 produces four segments:
-    # [category_prefix, YYYYMMDDTHHMMSS, microseconds, pid].  The timestamp's
-    # internal underscore (between seconds and microseconds) is the third split
-    # from the right, not an extra delimiter.
-    def _ts_key(p: Path) -> str:
-        parts = p.stem.rsplit("_", 3)
-        return f"{parts[1]}_{parts[2]}" if len(parts) == 4 else ""
-
+    # (e.g. runtime_launch).  Valid names split into:
+    # [ffdc_{category}, YYYYMMDDTHHMMSS, microseconds, pid].
+    candidates = []
+    for report_path in search_dir.glob("ffdc_*.json"):
+        sort_key = _report_sort_key(report_path)
+        if sort_key is not None:
+            candidates.append((sort_key, report_path))
     reports = sorted(
-        search_dir.glob("ffdc_*.json"),
-        key=_ts_key,
+        candidates,
+        key=lambda item: item[0],
         reverse=True,
     )
-    for report_path in reports:
+    for _, report_path in reports:
         try:
             with open(report_path, encoding="utf-8") as f:
                 report = json.load(f)

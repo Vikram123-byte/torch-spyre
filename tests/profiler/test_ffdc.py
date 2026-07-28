@@ -31,6 +31,7 @@ from torch_spyre.profiler._ffdc import (
     _call_with_timeout,
     _MAX_REPORTS,
     _prune_old_reports,
+    _report_sort_key,
     REQUIRED_FIELDS,
     collect,
     get_diagnostic_report,
@@ -40,6 +41,33 @@ from torch_spyre.profiler._ffdc import (
 # Default names for an unclaimed PrivateUse1 slot (PyTorch 2.11 uses
 # ``privateuseone``; older builds may return ``privateuse1``).
 _UNCLAIMED_PRIVATEUSE1_NAMES = frozenset({"privateuse1", "privateuseone"})
+_VALID_REPORT_NAME = "ffdc_unknown_20250101T000001_000000_1.json"
+_VALID_REPORT_JSON = f'{{"failure": {{"category": "{CATEGORY_UNKNOWN}"}}}}'
+_NEWEST_VALID_REPORT_NAME = "ffdc_compile_20250101T000002_000000_1.json"
+
+
+def _write_ffdc_report(directory: Path, name: str, payload: str | bytes) -> Path:
+    path = directory / name
+    if isinstance(payload, bytes):
+        path.write_bytes(payload)
+    else:
+        path.write_text(payload)
+    return path
+
+
+def _assert_get_diagnostic_report_skips_newest(
+    tmp: str,
+    *,
+    newest_name: str,
+    newest_payload: str | bytes,
+) -> None:
+    d = Path(tmp)
+    _write_ffdc_report(d, newest_name, newest_payload)
+    valid = _write_ffdc_report(d, _VALID_REPORT_NAME, _VALID_REPORT_JSON)
+    result = get_diagnostic_report(output_dir=tmp)
+    assert result is not None
+    assert result["failure"]["category"] == CATEGORY_UNKNOWN
+    assert result["_report_path"] == str(valid.resolve())
 
 
 @pytest.fixture(scope="module")
@@ -250,7 +278,20 @@ class TestFfdcCollect:
         assert fname.startswith("ffdc_compile_")
         assert ".json" in fname
 
-    def test_collect_filename_parses_for_timestamp_sort_key(self):
+    def test_empty_failure_category_normalizes_to_unknown(self):
+        try:
+            raise ValueError("x")
+        except ValueError as exc:
+            with tempfile.TemporaryDirectory() as tmp:
+                report = collect(exc, failure_category="", output_dir=tmp)
+                assert report["failure"]["category"] == CATEGORY_UNKNOWN
+                fname = Path(report["_report_path"]).name
+                assert fname.startswith("ffdc_unknown_")
+                result = get_diagnostic_report(output_dir=tmp)
+        assert result is not None
+        assert result["failure"]["category"] == CATEGORY_UNKNOWN
+
+    def test_collect_filename_has_report_sort_key(self):
         try:
             raise ValueError("x")
         except ValueError as exc:
@@ -260,14 +301,8 @@ class TestFfdcCollect:
                 )
                 path = Path(report["_report_path"])
 
-        parts = path.stem.rsplit("_", 3)
-        assert len(parts) == 4
-        assert parts[0] == "ffdc_runtime_launch"
-        assert parts[1].startswith("20") and "T" in parts[1]
-        assert parts[2].isdigit()
-        assert parts[3].isdigit()
-        sort_key = f"{parts[1]}_{parts[2]}"
-        assert len(sort_key) > 0
+        assert _report_sort_key(path) is not None
+        assert path.name.startswith("ffdc_runtime_launch_")
 
     def test_completeness_pct_reflects_missing_fields(self):
         # Without an exception, failure.exception_type and failure.traceback are
@@ -351,43 +386,51 @@ class TestFfdcCollect:
 
     def test_get_diagnostic_report_skips_corrupted_newest_report(self):
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            corrupt = d / "ffdc_compile_20250101T000002_000000_1.json"
-            valid = d / "ffdc_unknown_20250101T000001_000000_1.json"
-            corrupt.write_text("{not valid json")
-            valid.write_text('{"failure": {"category": "unknown"}}')
-
-            result = get_diagnostic_report(output_dir=tmp)
-            assert result is not None
-            assert result["failure"]["category"] == "unknown"
-            assert result["_report_path"] == str(valid.resolve())
+            _assert_get_diagnostic_report_skips_newest(
+                tmp,
+                newest_name=_NEWEST_VALID_REPORT_NAME,
+                newest_payload="{not valid json",
+            )
 
     def test_get_diagnostic_report_skips_non_utf8_newest_report(self):
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            corrupt = d / "ffdc_compile_20250101T000002_000000_1.json"
-            valid = d / "ffdc_unknown_20250101T000001_000000_1.json"
-            corrupt.write_bytes(b"\xff\xfe not utf-8")
-            valid.write_text('{"failure": {"category": "unknown"}}')
+            _assert_get_diagnostic_report_skips_newest(
+                tmp,
+                newest_name=_NEWEST_VALID_REPORT_NAME,
+                newest_payload=b"\xff\xfe not utf-8",
+            )
 
-            result = get_diagnostic_report(output_dir=tmp)
-            assert result is not None
-            assert result["failure"]["category"] == "unknown"
-            assert result["_report_path"] == str(valid.resolve())
+    @pytest.mark.parametrize(
+        "malformed_name",
+        [
+            # Invalid date/time fields that would sort ahead of a real report.
+            "ffdc_x_99999999T999999_999999_1.json",
+            # Non-canonical (non-zero-padded) timestamp shape.
+            "ffdc_unknown_9999999T010101_123456_1.json",
+            # Arabic-Indic digits in ts_seconds (isdigit() true, isascii() false).
+            "ffdc_unknown_٢٠٢٥٠١٠١T٠٠٠٠٠٢_000000_1.json",
+            # Unicode digit PID (str.isdigit() true, but not ASCII).
+            "ffdc_unknown_20250101T000002_000000_².json",
+            # Non-ASCII category (str.isalnum() true, but not ASCII).
+            "ffdc_未知_20250101T000002_000000_1.json",
+        ],
+    )
+    def test_get_diagnostic_report_skips_invalid_filenames(self, malformed_name):
+        with tempfile.TemporaryDirectory() as tmp:
+            _assert_get_diagnostic_report_skips_newest(
+                tmp,
+                newest_name=malformed_name,
+                newest_payload='{"failure": {"category": "compile"}}',
+            )
 
     @pytest.mark.parametrize("payload", ["[]", "null", '"not a report"'])
     def test_get_diagnostic_report_skips_non_dict_newest_report(self, payload):
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            non_dict = d / "ffdc_compile_20250101T000002_000000_1.json"
-            valid = d / "ffdc_unknown_20250101T000001_000000_1.json"
-            non_dict.write_text(payload)
-            valid.write_text('{"failure": {"category": "unknown"}}')
-
-            result = get_diagnostic_report(output_dir=tmp)
-            assert result is not None
-            assert result["failure"]["category"] == "unknown"
-            assert result["_report_path"] == str(valid.resolve())
+            _assert_get_diagnostic_report_skips_newest(
+                tmp,
+                newest_name=_NEWEST_VALID_REPORT_NAME,
+                newest_payload=payload,
+            )
 
     def test_get_diagnostic_report_returns_none_when_all_corrupted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -667,22 +710,16 @@ class TestFfdcKernelRunner:
             runner.run()
 
 
+class TestFfdcProfilerApi:
+    def test_profiler_reexports_get_diagnostic_report(self):
+        assert profiler_get_diagnostic_report is get_diagnostic_report
+
+
 @pytest.mark.usefixtures("register_torch_spyre_public_api")
 class TestFfdcPublicApi:
     def test_torch_spyre_exposes_get_diagnostic_report(self):
         assert hasattr(torch.spyre, "get_diagnostic_report")
         assert callable(torch.spyre.get_diagnostic_report)
-
-    def test_profiler_reexports_get_diagnostic_report(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            report_file = d / "ffdc_unknown_20250101T000000_000000_1.json"
-            report_file.write_text('{"failure": {"category": "unknown"}}')
-
-            result = profiler_get_diagnostic_report(output_dir=tmp)
-            assert result is not None
-            assert result["failure"]["category"] == "unknown"
-            assert result["_report_path"] == str(report_file.resolve())
 
     def test_torch_spyre_get_diagnostic_report(self):
         with tempfile.TemporaryDirectory() as tmp:
