@@ -423,7 +423,17 @@ class TestFfdcCollect:
                 newest_payload='{"failure": {"category": "compile"}}',
             )
 
-    @pytest.mark.parametrize("payload", ["[]", "null", '"not a report"'])
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "[]",
+            "null",
+            '"not a report"',
+            "{}",
+            '{"failure": null}',
+            '{"failure": {"category": 42}}',
+        ],
+    )
     def test_get_diagnostic_report_skips_non_dict_newest_report(self, payload):
         with tempfile.TemporaryDirectory() as tmp:
             _assert_get_diagnostic_report_skips_newest(

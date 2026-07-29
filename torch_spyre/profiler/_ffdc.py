@@ -587,6 +587,11 @@ def get_diagnostic_report(
             continue
         if not isinstance(report, dict):
             continue
+        failure = report.get("failure")
+        if not isinstance(failure, dict) or not isinstance(
+            failure.get("category"), str
+        ):
+            continue
         report["_report_path"] = str(report_path.resolve())
         return report
     return None
