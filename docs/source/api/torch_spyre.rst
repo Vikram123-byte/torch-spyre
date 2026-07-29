@@ -291,19 +291,36 @@ FFDC (First Failure Data Capture)
 
 .. function:: torch.spyre.get_diagnostic_report(output_dir=None) -> dict | None
 
-   Return the most recent FFDC diagnostic report written by the torch-spyre
-   failure hooks, or ``None`` if no report exists.
+   Return the most recent valid FFDC diagnostic report written by the
+   torch-spyre failure hooks, or ``None`` if no valid report remains.
 
    Reports are JSON documents capturing exception metadata (``failure``),
    environment variables (``environment``), compiler artifact paths
    (``artifacts``), runtime context (``runtime``), hardware availability
    (``hardware_state``), and collector completeness (``collector``). The
    returned dict also includes ``_report_path`` with the absolute path of the
-   loaded report file.
+   loaded report file. That path is local to the host that produced the
+   report (for example a developer machine or CI pod filesystem). It is not
+   published to CI web UIs unless a workflow explicitly prints the report or
+   uploads the report directory as an artifact.
 
    Reports are written automatically when a failure is captured and
    ``USE_SPYRE_PROFILER=1`` is set. Retrieval via this function does not
    require that environment variable.
+
+   Each successful capture writes a new file named
+   ``ffdc_<category>_<YYYYMMDDTHHMMSS>_<microseconds>_<pid>.json``; earlier
+   reports are not overwritten. The directory retains the newest 50 files (by
+   modification time) and deletes older ones. Identify a report by that
+   filename (category, UTC timestamp, process id) or by fields inside the JSON
+   such as ``metadata.timestamp``, ``metadata.pid``, ``metadata.host``, and
+   ``failure.category``.
+
+   Candidates are walked newest-first by the timestamp embedded in the
+   filename. Unreadable or structurally invalid files (for example corrupted
+   JSON, non-UTF-8 content, invalid filenames, or a missing string
+   ``failure.category``) are skipped, and ``None`` is returned when no valid
+   report remains.
 
    :param output_dir: Directory to search. If ``None``, uses the default
        Inductor cache location

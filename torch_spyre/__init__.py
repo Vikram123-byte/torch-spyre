@@ -196,7 +196,7 @@ def make_spyre_module() -> types.ModuleType:
     def get_diagnostic_report(
         output_dir: Optional[str] = None,
     ) -> Optional[dict]:
-        """Return the most recent FFDC report as a dict, or None if none exist."""
+        """Return the most recent valid FFDC report, or None if none remain."""
         from torch_spyre.profiler._ffdc import get_diagnostic_report as _get_report
 
         return _get_report(output_dir)

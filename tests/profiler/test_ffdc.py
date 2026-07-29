@@ -17,11 +17,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-import torch
-import torch_spyre  # noqa: F401
 
 from torch_spyre import make_spyre_module  # type: ignore[attr-defined]
-from torch_spyre.constants import DEVICE_NAME
 from torch_spyre.profiler import get_diagnostic_report as profiler_get_diagnostic_report
 from torch_spyre.profiler._ffdc import (
     CATEGORY_COMPILE,
@@ -38,9 +35,6 @@ from torch_spyre.profiler._ffdc import (
     try_collect,
 )
 
-# Default names for an unclaimed PrivateUse1 slot (PyTorch 2.11 uses
-# ``privateuseone``; older builds may return ``privateuse1``).
-_UNCLAIMED_PRIVATEUSE1_NAMES = frozenset({"privateuse1", "privateuseone"})
 _VALID_REPORT_NAME = "ffdc_unknown_20250101T000001_000000_1.json"
 _VALID_REPORT_JSON = f'{{"failure": {{"category": "{CATEGORY_UNKNOWN}"}}}}'
 _NEWEST_VALID_REPORT_NAME = "ffdc_compile_20250101T000002_000000_1.json"
@@ -56,49 +50,31 @@ def _write_ffdc_report(directory: Path, name: str, payload: str | bytes) -> Path
 
 
 def _assert_get_diagnostic_report_skips_newest(
-    tmp: str,
     *,
     newest_name: str,
     newest_payload: str | bytes,
+    get_report=get_diagnostic_report,
 ) -> None:
-    d = Path(tmp)
-    _write_ffdc_report(d, newest_name, newest_payload)
-    valid = _write_ffdc_report(d, _VALID_REPORT_NAME, _VALID_REPORT_JSON)
-    result = get_diagnostic_report(output_dir=tmp)
-    assert result is not None
-    assert result["failure"]["category"] == CATEGORY_UNKNOWN
-    assert result["_report_path"] == str(valid.resolve())
+    """Assert a newer unusable report is skipped in favour of an older valid one.
 
-
-@pytest.fixture(scope="module")
-def register_torch_spyre_public_api():
-    """Ensure ``torch.spyre.get_diagnostic_report`` for public API tests.
-
-    Installed packages autoload spyre via the ``torch_spyre`` entry point.
-    When another test has already renamed PrivateUse1, unconditional rename
-    raises during module setup. Check the current backend name first; only
-    rename when the slot is still unclaimed.
-
-    Opt-in via ``@pytest.mark.usefixtures`` on ``TestFfdcPublicApi`` so a
-    claimed PrivateUse1 slot skips only public-API coverage, not retrieval
-    tests that call ``get_diagnostic_report`` directly.
+    The invalid/newest fixture is written second and given a later st_mtime so an
+    mtime-based implementation cannot pass by accidentally selecting the valid
+    file.
     """
-    if hasattr(torch, DEVICE_NAME):
-        return
+    import os
 
-    backend_name = torch._C._get_privateuse1_backend_name()
-    if backend_name == DEVICE_NAME:
-        torch._register_device_module(DEVICE_NAME, make_spyre_module())
-        return
-
-    if backend_name not in _UNCLAIMED_PRIVATEUSE1_NAMES:
-        pytest.skip(
-            f"PrivateUse1 already claimed as {backend_name!r}; "
-            "skipping torch.spyre public API tests."
-        )
-
-    torch.utils.rename_privateuse1_backend(DEVICE_NAME)
-    torch._register_device_module(DEVICE_NAME, make_spyre_module())
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        # Write valid first so write order alone would give it the older mtime;
+        # then pin mtimes explicitly (same pattern as the across-categories test).
+        valid = _write_ffdc_report(d, _VALID_REPORT_NAME, _VALID_REPORT_JSON)
+        newest = _write_ffdc_report(d, newest_name, newest_payload)
+        os.utime(valid, (0, 0))
+        os.utime(newest, (100, 100))
+        result = get_report(output_dir=tmp)
+        assert result is not None
+        assert result["failure"]["category"] == CATEGORY_UNKNOWN
+        assert result["_report_path"] == str(valid.resolve())
 
 
 @pytest.fixture(autouse=True)
@@ -364,6 +340,8 @@ class TestFfdcCollect:
             assert get_diagnostic_report(output_dir=tmp) is None
 
     def test_get_diagnostic_report_returns_latest(self):
+        # Second capture has the later embedded filename timestamp. Pin the first
+        # report's st_mtime ahead so an mtime-based implementation cannot pass.
         import os
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -371,34 +349,32 @@ class TestFfdcCollect:
                 raise RuntimeError("first")
             except RuntimeError as exc:
                 r1 = collect(exc, failure_category=CATEGORY_COMPILE, output_dir=tmp)
-            # Pin the first file's mtime to epoch so the second is unambiguously newer.
-            os.utime(r1["_report_path"], (0, 0))
             try:
                 raise RuntimeError("second")
             except RuntimeError as exc:
-                collect(exc, failure_category=CATEGORY_RUNTIME_LAUNCH, output_dir=tmp)
+                r2 = collect(
+                    exc, failure_category=CATEGORY_RUNTIME_LAUNCH, output_dir=tmp
+                )
+            os.utime(r1["_report_path"], (100, 100))
+            os.utime(r2["_report_path"], (0, 0))
 
             result = get_diagnostic_report(output_dir=tmp)
             assert result is not None
             assert "failure" in result
             assert result["failure"]["category"] == CATEGORY_RUNTIME_LAUNCH
-            assert result["_report_path"].endswith(".json")
+            assert result["_report_path"] == str(Path(r2["_report_path"]).resolve())
 
     def test_get_diagnostic_report_skips_corrupted_newest_report(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            _assert_get_diagnostic_report_skips_newest(
-                tmp,
-                newest_name=_NEWEST_VALID_REPORT_NAME,
-                newest_payload="{not valid json",
-            )
+        _assert_get_diagnostic_report_skips_newest(
+            newest_name=_NEWEST_VALID_REPORT_NAME,
+            newest_payload="{not valid json",
+        )
 
     def test_get_diagnostic_report_skips_non_utf8_newest_report(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            _assert_get_diagnostic_report_skips_newest(
-                tmp,
-                newest_name=_NEWEST_VALID_REPORT_NAME,
-                newest_payload=b"\xff\xfe not utf-8",
-            )
+        _assert_get_diagnostic_report_skips_newest(
+            newest_name=_NEWEST_VALID_REPORT_NAME,
+            newest_payload=b"\xff\xfe not utf-8",
+        )
 
     @pytest.mark.parametrize(
         "malformed_name",
@@ -416,12 +392,10 @@ class TestFfdcCollect:
         ],
     )
     def test_get_diagnostic_report_skips_invalid_filenames(self, malformed_name):
-        with tempfile.TemporaryDirectory() as tmp:
-            _assert_get_diagnostic_report_skips_newest(
-                tmp,
-                newest_name=malformed_name,
-                newest_payload='{"failure": {"category": "compile"}}',
-            )
+        _assert_get_diagnostic_report_skips_newest(
+            newest_name=malformed_name,
+            newest_payload='{"failure": {"category": "compile"}}',
+        )
 
     @pytest.mark.parametrize(
         "payload",
@@ -435,17 +409,14 @@ class TestFfdcCollect:
         ],
     )
     def test_get_diagnostic_report_skips_non_dict_newest_report(self, payload):
-        with tempfile.TemporaryDirectory() as tmp:
-            _assert_get_diagnostic_report_skips_newest(
-                tmp,
-                newest_name=_NEWEST_VALID_REPORT_NAME,
-                newest_payload=payload,
-            )
+        _assert_get_diagnostic_report_skips_newest(
+            newest_name=_NEWEST_VALID_REPORT_NAME,
+            newest_payload=payload,
+        )
 
     def test_get_diagnostic_report_returns_none_when_all_corrupted(self):
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            (d / "ffdc_unknown_20250101T000000_000000_1.json").write_text("{bad json")
+            _write_ffdc_report(Path(tmp), _VALID_REPORT_NAME, "{bad json")
 
             assert get_diagnostic_report(output_dir=tmp) is None
 
@@ -461,7 +432,7 @@ class TestFfdcCollect:
                 try:
                     raise RuntimeError("path test")
                 except RuntimeError as exc:
-                    collect(
+                    written = collect(
                         exc, failure_category=CATEGORY_COMPILE, output_dir="reports"
                     )
 
@@ -469,39 +440,50 @@ class TestFfdcCollect:
             finally:
                 os.chdir(cwd)
 
+            written_path = Path(written["_report_path"])
+            assert written_path.is_absolute()
+            assert written_path.is_file()
             assert result is not None
             report_path = Path(result["_report_path"])
             assert report_path.is_absolute()
             assert report_path.is_file()
             assert report_path.resolve().is_relative_to(reports_dir.resolve())
+            assert report_path == written_path
 
     def test_get_diagnostic_report_works_when_capture_disabled(self, monkeypatch):
         # Retrieval is not gated on USE_SPYRE_PROFILER; only collect() is.
         monkeypatch.setenv("USE_SPYRE_PROFILER", "0")
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            report_file = d / "ffdc_unknown_20250101T000000_000000_1.json"
-            report_file.write_text('{"failure": {"category": "unknown"}}')
+            report_file = _write_ffdc_report(
+                Path(tmp), _VALID_REPORT_NAME, _VALID_REPORT_JSON
+            )
 
             result = get_diagnostic_report(output_dir=tmp)
             assert result is not None
-            assert result["failure"]["category"] == "unknown"
+            assert result["failure"]["category"] == CATEGORY_UNKNOWN
             assert result["_report_path"] == str(report_file.resolve())
 
     def test_get_diagnostic_report_returns_latest_across_categories(self):
-        # A fresh compile report must win over a stale unknown report.
-        # With name-sort, unknown > compile lexically so the stale unknown
-        # would be returned instead.
+        # Selection sorts by the timestamp embedded in the filename, not mtime
+        # or the full name. Pin unknown st_mtime ahead of compile so an
+        # mtime-based implementation cannot pass; compile must still win via its
+        # later embedded timestamp, and must not lose to a full-name lexical sort.
         import os
 
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            stale_unknown = d / "ffdc_unknown_20250101T000000_000000_1.json"
-            fresh_compile = d / "ffdc_compile_20250101T000001_000000_1.json"
-            stale_unknown.write_text('{"failure": {"category": "unknown"}}')
-            fresh_compile.write_text('{"failure": {"category": "compile"}}')
-            os.utime(stale_unknown, (0, 0))  # mtime: epoch
-            os.utime(fresh_compile, (100, 100))  # mtime: 100 s later
+            compile_path = _write_ffdc_report(
+                d,
+                "ffdc_compile_20250101T000001_000000_1.json",
+                '{"failure": {"category": "compile"}}',
+            )
+            unknown_path = _write_ffdc_report(
+                d,
+                "ffdc_unknown_20250101T000000_000000_1.json",
+                '{"failure": {"category": "unknown"}}',
+            )
+            os.utime(compile_path, (0, 0))
+            os.utime(unknown_path, (100, 100))
 
             result = get_diagnostic_report(output_dir=tmp)
             assert result is not None
@@ -721,24 +703,57 @@ class TestFfdcKernelRunner:
 
 
 class TestFfdcProfilerApi:
-    def test_profiler_reexports_get_diagnostic_report(self):
+    def test_profiler_package_exports_get_diagnostic_report(self):
+        # Prefer the package import path over ``torch_spyre.profiler`` attribute
+        # access: ``torch_spyre/__init__.py`` sets ``profiler = None`` when
+        # ``profiler.is_available()`` is false, which shadows the submodule.
+        import importlib
+
+        profiler_pkg = importlib.import_module("torch_spyre.profiler")
+
+        assert "get_diagnostic_report" in profiler_pkg.__all__
+        assert hasattr(profiler_pkg, "get_diagnostic_report")
+        assert callable(profiler_pkg.get_diagnostic_report)
+        assert profiler_pkg.get_diagnostic_report is get_diagnostic_report
         assert profiler_get_diagnostic_report is get_diagnostic_report
 
-
-@pytest.mark.usefixtures("register_torch_spyre_public_api")
-class TestFfdcPublicApi:
-    def test_torch_spyre_exposes_get_diagnostic_report(self):
-        assert hasattr(torch.spyre, "get_diagnostic_report")
-        assert callable(torch.spyre.get_diagnostic_report)
-
-    def test_torch_spyre_get_diagnostic_report(self):
         with tempfile.TemporaryDirectory() as tmp:
-            assert torch.spyre.get_diagnostic_report(output_dir=tmp) is None
+            assert profiler_pkg.get_diagnostic_report(output_dir=tmp) is None
+
+
+class TestFfdcPublicApi:
+    """Exercise the ``make_spyre_module()`` binding without claiming PrivateUse1.
+
+    ``rename_privateuse1_backend()`` is process-wide and one-way, so public-API
+    coverage uses a local module from ``make_spyre_module()`` rather than
+    mutating ``torch.spyre`` for the worker.
+    """
+
+    def test_make_spyre_module_exposes_get_diagnostic_report(self):
+        mod = make_spyre_module()
+        assert hasattr(mod, "get_diagnostic_report")
+        assert callable(mod.get_diagnostic_report)
+
+    def test_make_spyre_module_get_diagnostic_report(self):
+        mod = make_spyre_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            assert mod.get_diagnostic_report(output_dir=tmp) is None
             try:
                 raise ValueError("public api")
             except ValueError as exc:
                 collect(exc, failure_category=CATEGORY_UNKNOWN, output_dir=tmp)
-            result = torch.spyre.get_diagnostic_report(output_dir=tmp)
+            result = mod.get_diagnostic_report(output_dir=tmp)
             assert result is not None
             assert result["failure"]["category"] == CATEGORY_UNKNOWN
             assert "public api" in result["failure"]["message"]
+            report_path = Path(result["_report_path"])
+            assert report_path.is_absolute()
+            assert report_path.is_file()
+            assert report_path.resolve().is_relative_to(Path(tmp).resolve())
+
+    def test_make_spyre_module_skips_newer_invalid_report(self):
+        _assert_get_diagnostic_report_skips_newest(
+            newest_name=_NEWEST_VALID_REPORT_NAME,
+            newest_payload="{}",
+            get_report=make_spyre_module().get_diagnostic_report,
+        )

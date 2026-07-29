@@ -478,7 +478,7 @@ def collect(
         report_path = out_dir / f"ffdc_{safe_category}_{ts}_{os.getpid()}.json"
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2, default=str)
-        report["_report_path"] = str(report_path)
+        report["_report_path"] = str(report_path.resolve())
         _prune_old_reports(out_dir, keep=_MAX_REPORTS)
     except Exception as e:
         report["_report_path"] = None
@@ -544,7 +544,7 @@ def get_diagnostic_report(
     output_dir: Optional[str] = None,
 ) -> Optional[dict]:
     """
-    Return the most recent FFDC report as a dict, or None if none exist.
+    Return the most recent valid FFDC report as a dict, or None if none remain.
 
     Args:
         output_dir: Directory to search. Defaults to the Inductor cache dir
@@ -552,10 +552,12 @@ def get_diagnostic_report(
             ``TORCHINDUCTOR_CACHE_DIR``), with a fallback to the system temp dir.
 
     Returns:
-        Parsed JSON dict of the most recent readable report, or None. The
+        Parsed JSON dict of the most recent valid report, or None. The
         returned dict includes ``_report_path`` with the absolute path of the
-        loaded file. Corrupted, non-UTF-8, unreadable, or invalidly named
-        report files are skipped.
+        loaded file. Corrupted, non-UTF-8, unreadable, invalidly named, or
+        structurally invalid report files (for example missing a string
+        ``failure.category``) are skipped. Returns None when no valid report
+        remains.
     """
     search_dir = Path(output_dir) if output_dir else _default_output_dir()
     if not search_dir.exists():
