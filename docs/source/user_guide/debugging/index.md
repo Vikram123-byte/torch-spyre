@@ -22,9 +22,13 @@ from the outside in:
 
 1. **Isolate** — reduce the problem to a minimal, self-contained script
 2. **Observe data transfers** — verify tensors arrive on device correctly
-3. **Inspect compiler artifacts** — trace the issue through the
+3. **Capture failure context** — when a compile or runtime error occurs,
+   enable [FFDC](../profiling/ffdc.md) (`USE_SPYRE_PROFILER=1`) and
+   retrieve `torch.spyre.get_diagnostic_report()` after the failure while
+   the report files are still available
+4. **Inspect compiler artifacts** — trace the issue through the
    compilation pipeline (FX Graph → Loop IR → `sdsc_<index>.json`)
-4. **Bisect frontend vs. backend** — use the `sendnn` backend to
+5. **Bisect frontend vs. backend** — use the `sendnn` backend to
    determine whether the bug is in Torch-Spyre's front-end or in the
    DeepTools back-end compiler
 
@@ -56,15 +60,17 @@ The following environment variables control the level of diagnostic output:
 | `TORCHINDUCTOR_FORCE_DISABLE_CACHES=1` | Forces full recompilation on every run; ensures you see fresh artifacts, not cached ones |
 | `TORCH_SPYRE_DEBUG=1` | Logs all CPU↔Spyre data transfers, including tensor shapes, layouts, and raw values |
 | `TORCH_COMPILE_DEBUG=1` | Writes intermediate compiler artifacts to a local directory for offline inspection |
+| `USE_SPYRE_PROFILER=1` | Captures an [FFDC](../profiling/ffdc.md) JSON report on compile/runtime/unimplemented failures |
 | `SPYRE_INDUCTOR_LOG=1` | *Deprecated.* Use `TORCH_LOGS="spyre.inductor:INFO"` instead |
 | `SPYRE_INDUCTOR_LOG_LEVEL=DEBUG` | *Deprecated.* Use `TORCH_LOGS="spyre.inductor:DEBUG"` instead |
 | `SPYRE_LOG_FILE=path/to/file.log` | Redirect Spyre Inductor log output to a file |
 | `TORCH_SPYRE_DOWNCAST_WARN=0` | Suppress int64→int32 warnings |
 | `TORCH_LOGS="+inductor"` | PyTorch provided tool to selectively enable Inductor or other parts of the `torch.compile` to the log |
 
-Run your reproducer with all three enabled:
+Run your reproducer with FFDC plus the main debug flags enabled:
 
 ```bash
+USE_SPYRE_PROFILER=1 \
 TORCHINDUCTOR_FORCE_DISABLE_CACHES=1 \
 TORCH_SPYRE_DEBUG=1 \
 TORCH_COMPILE_DEBUG=1 \
@@ -77,7 +83,37 @@ directory, depending on your PyTorch version).
 
 ---
 
-## Step 3 — Examine Compiler Artifacts
+## Step 3 — Capture FFDC Report
+
+If the failure is a compile error, runtime launch error, or
+unimplemented operation, FFDC can preserve the exception context and
+nearby artifact paths before logs are cleaned up.
+
+Enable capture before reproducing:
+
+```bash
+USE_SPYRE_PROFILER=1 python my_reproducer.py
+```
+
+After the failure, retrieve the newest valid report:
+
+```python
+import torch
+import torch_spyre
+
+report = torch.spyre.get_diagnostic_report()
+if report is not None:
+    print(report["failure"]["category"])
+    print(report["failure"]["message"])
+    print(report["_report_path"])
+```
+
+See the [FFDC guide](../profiling/ffdc.md) for report locations,
+artifact interpretation, and pod/CI workflow.
+
+---
+
+## Step 4 — Examine Compiler Artifacts
 
 `TORCH_COMPILE_DEBUG` preserves one subdirectory per compiled function.
 Inside you will find the intermediate representation at each stage of
@@ -155,7 +191,7 @@ for the full investigation.)*
 
 ---
 
-## Step 4 — Bisect Frontend vs. Backend with `sendnn`
+## Step 5 — Bisect Frontend vs. Backend with `sendnn`
 
 If the `sdsc_<index>.json` files look correct, the bug is likely in the DeepTools
 back-end compiler. To confirm, re-run the same script using the
@@ -212,6 +248,7 @@ When opening an issue, include:
 
 ```bash
 # Full debug run
+USE_SPYRE_PROFILER=1 \
 TORCHINDUCTOR_FORCE_DISABLE_CACHES=1 \
 TORCH_SPYRE_DEBUG=1 \
 TORCH_COMPILE_DEBUG=1 \

@@ -294,9 +294,10 @@ FFDC (First Failure Data Capture)
    Return the most recent valid FFDC diagnostic report written by the
    torch-spyre failure hooks, or ``None`` if no valid report remains.
 
-   Reports are JSON documents capturing exception metadata (``failure``),
-   environment variables (``environment``), compiler artifact paths
-   (``artifacts``), runtime context (``runtime``), hardware availability
+   Reports are JSON documents with these top-level sections: capture
+   context (``metadata``), the exception itself (``failure``), environment
+   variables (``environment``), compiler artifact paths (``artifacts``),
+   runtime context (``runtime``), hardware availability
    (``hardware_state``), and collector completeness (``collector``). The
    returned dict also includes ``_report_path`` with the absolute path of the
    loaded report file. That path is local to the host that produced the
@@ -344,7 +345,9 @@ FFDC (First Failure Data Capture)
               print(report["_report_path"])
 
    The same function is also available as
-   ``torch_spyre.profiler.get_diagnostic_report``.
+   ``torch_spyre.profiler.get_diagnostic_report``. For usage workflow,
+   report locations, and JSON triage, see
+   :doc:`../user_guide/profiling/ffdc`.
 
 Tensor Operations
 -----------------

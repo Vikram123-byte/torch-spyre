@@ -5,7 +5,9 @@
 Variables that affect profile capture, telemetry, and observability.
 Debug-oriented variables (`TORCH_SPYRE_DEBUG`, `TORCH_COMPILE_DEBUG`,
 `TORCHINDUCTOR_FORCE_DISABLE_CACHES`, `INDUCTOR_PROVENANCE`,
-`TORCH_TRACE`) live under [Debugging](../debugging/index.md).
+`TORCH_TRACE`) live under [Debugging](../debugging/index.md); the FFDC
+table below re-lists `TORCH_COMPILE_DEBUG` only to note its effect on
+captured artifacts.
 
 ## Logging
 
@@ -28,7 +30,12 @@ Debug-oriented variables (`TORCH_SPYRE_DEBUG`, `TORCH_COMPILE_DEBUG`,
 
 | Variable | Effect |
 |---|---|
-| `USE_SPYRE_PROFILER=1` | Opt in to automatic FFDC JSON reports on Spyre compile / runtime / unimplemented failures. Retrieve with `torch.spyre.get_diagnostic_report()`. (Same name as the CMake profiler build flag; at runtime this env var alone gates capture.) |
+| `USE_SPYRE_PROFILER=1` | Opt in to automatic FFDC JSON reports on Spyre compile / runtime / unimplemented failures. Retrieve with `torch.spyre.get_diagnostic_report()`. This env var alone gates capture at runtime, independent of how the package was built. |
+| `TORCH_COMPILE_DEBUG=1` | Writes `torch_compile_debug/` artifacts that FFDC links into `artifacts.paths` (see [FFDC user guide](ffdc.md)) |
+| `DUMP_SPYRE_CODE=1` | Emits `sdsc_*.json` and `*.mlir` bundle files that FFDC can reference |
+
+See the [FFDC user guide](ffdc.md) for the full workflow, report locations,
+and pod/CI usage.
 
 ## Device enumeration
 
