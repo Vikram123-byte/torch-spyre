@@ -16,7 +16,6 @@ import os
 import threading
 import types
 import importlib
-from typing import Optional
 
 import torch
 
@@ -192,16 +191,8 @@ def make_spyre_module() -> types.ModuleType:
     mod.set_device = lambda idx: impl.set_device(idx)
     mod._is_compiled = lambda: True
     mod.memory = memory
-
-    def get_diagnostic_report(
-        output_dir: Optional[str] = None,
-    ) -> Optional[dict]:
-        """Return the most recent valid FFDC report, or None if none remain."""
-        from torch_spyre.profiler._ffdc import get_diagnostic_report as _get_report
-
-        return _get_report(output_dir)
-
-    mod.get_diagnostic_report = get_diagnostic_report
+    # Public profiler API (eagerly imported above); avoid private _ffdc import.
+    mod.get_diagnostic_report = profiler.get_diagnostic_report
 
     import torch  # noqa: E402
 
@@ -385,7 +376,3 @@ def _autoload():
 
     # Enable spyre code with symbolic args by default
     os.environ.setdefault("BUNDLE_SYMBOLIC_ARGS", "1")
-
-
-if not profiler.is_available():
-    profiler = None

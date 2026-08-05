@@ -323,11 +323,11 @@ FFDC (First Failure Data Capture)
    ``failure.category``) are skipped, and ``None`` is returned when no valid
    report remains.
 
-   :param output_dir: Directory to search. If ``None``, uses the default
-       Inductor cache location
-       (``~/.cache/torch/inductor/torch-spyre/ffdc_reports``, respecting
-       ``TORCHINDUCTOR_CACHE_DIR``), falling back to the system temp directory
-       when the cache is unavailable.
+   :param output_dir: Directory to search. If ``None``, uses
+       ``<Inductor cache root>/torch-spyre/ffdc_reports``, where the cache
+       root is ``$TORCHINDUCTOR_CACHE_DIR`` or else
+       ``<tempdir>/torchinductor_<user>``. Falls back to
+       ``<tempdir>/torch-spyre-ffdc`` if that root cannot be resolved.
    :type output_dir: str, optional
 
    .. code-block:: python

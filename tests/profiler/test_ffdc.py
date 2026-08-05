@@ -26,6 +26,7 @@ from torch_spyre.profiler._ffdc import (
     CATEGORY_UNIMPLEMENTED,
     CATEGORY_UNKNOWN,
     _call_with_timeout,
+    _default_output_dir,
     _MAX_REPORTS,
     _prune_old_reports,
     _report_sort_key,
@@ -338,6 +339,24 @@ class TestFfdcCollect:
     def test_get_diagnostic_report_returns_none_when_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             assert get_diagnostic_report(output_dir=tmp) is None
+
+    def test_default_output_dir_uses_inductor_cache_root(self, monkeypatch, tmp_path):
+        # Documents the real Inductor layout: cache_dir() → default_cache_dir()
+        # → <tempdir>/torchinductor_<user>, not ~/.cache/torch/inductor.
+
+        from torch._inductor.runtime.runtime_utils import (
+            cache_dir as inductor_cache_dir,
+        )
+
+        monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
+        expected = Path(inductor_cache_dir()) / "torch-spyre" / "ffdc_reports"
+        assert _default_output_dir() == expected
+        assert "torchinductor_" in str(expected)
+        assert ".cache/torch/inductor" not in str(expected)
+
+        custom = tmp_path / "custom_torchinductor"
+        monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(custom))
+        assert _default_output_dir() == custom / "torch-spyre" / "ffdc_reports"
 
     def test_get_diagnostic_report_returns_latest(self):
         # Second capture has the later embedded filename timestamp. Pin the first
@@ -704,21 +723,17 @@ class TestFfdcKernelRunner:
 
 class TestFfdcProfilerApi:
     def test_profiler_package_exports_get_diagnostic_report(self):
-        # Prefer the package import path over ``torch_spyre.profiler`` attribute
-        # access: ``torch_spyre/__init__.py`` sets ``profiler = None`` when
-        # ``profiler.is_available()`` is false, which shadows the submodule.
-        import importlib
+        import torch_spyre
 
-        profiler_pkg = importlib.import_module("torch_spyre.profiler")
-
-        assert "get_diagnostic_report" in profiler_pkg.__all__
-        assert hasattr(profiler_pkg, "get_diagnostic_report")
-        assert callable(profiler_pkg.get_diagnostic_report)
-        assert profiler_pkg.get_diagnostic_report is get_diagnostic_report
+        assert torch_spyre.profiler is not None
+        assert "get_diagnostic_report" in torch_spyre.profiler.__all__
+        assert hasattr(torch_spyre.profiler, "get_diagnostic_report")
+        assert callable(torch_spyre.profiler.get_diagnostic_report)
+        assert torch_spyre.profiler.get_diagnostic_report is get_diagnostic_report
         assert profiler_get_diagnostic_report is get_diagnostic_report
 
         with tempfile.TemporaryDirectory() as tmp:
-            assert profiler_pkg.get_diagnostic_report(output_dir=tmp) is None
+            assert torch_spyre.profiler.get_diagnostic_report(output_dir=tmp) is None
 
 
 class TestFfdcPublicApi:

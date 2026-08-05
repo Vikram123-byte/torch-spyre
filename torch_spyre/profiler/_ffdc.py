@@ -124,10 +124,10 @@ def _prune_old_reports(out_dir: Path, keep: int) -> None:
 def _default_output_dir() -> Path:
     """Return a user-writable directory for FFDC reports.
 
-    Prefers the Torch Inductor cache dir (respects TORCHINDUCTOR_CACHE_DIR,
-    falls back to ~/.cache/torch/inductor) so reports land alongside other
-    Inductor artifacts. Falls back to tempfile.gettempdir() in environments
-    where the Inductor cache is unavailable (e.g. import-only, no torch).
+    Prefers the Torch Inductor cache dir (respects ``TORCHINDUCTOR_CACHE_DIR``,
+    else ``<tempdir>/torchinductor_<user>`` via Inductor's ``cache_dir()``) so
+    reports land alongside other Inductor artifacts. Falls back to
+    ``<tempdir>/torch-spyre-ffdc`` when that cache root is unavailable.
     """
     try:
         from torch._inductor.runtime.runtime_utils import cache_dir as _cache_dir
@@ -323,9 +323,11 @@ def collect(
         failure_category: One of compile, runtime_launch, unimplemented, unknown.
         kernel_name: Kernel name from SpyreSDSCKernelRunner if available.
         code_dir: Code directory from SpyreSDSCKernelRunner if available.
-        output_dir: Directory to write report JSON. Defaults to the Inductor cache dir
-            (``~/.cache/torch/inductor/torch-spyre/ffdc_reports``, respecting
-            ``TORCHINDUCTOR_CACHE_DIR``), with a fallback to the system temp dir.
+        output_dir: Directory to write report JSON. Defaults to
+            ``<Inductor cache root>/torch-spyre/ffdc_reports``, where the
+            cache root is ``$TORCHINDUCTOR_CACHE_DIR`` or else
+            ``<tempdir>/torchinductor_<user>``. Falls back to
+            ``<tempdir>/torch-spyre-ffdc`` if that root cannot be resolved.
 
     Returns:
         dict with the full FFDC report.
@@ -547,9 +549,11 @@ def get_diagnostic_report(
     Return the most recent valid FFDC report as a dict, or None if none remain.
 
     Args:
-        output_dir: Directory to search. Defaults to the Inductor cache dir
-            (``~/.cache/torch/inductor/torch-spyre/ffdc_reports``, respecting
-            ``TORCHINDUCTOR_CACHE_DIR``), with a fallback to the system temp dir.
+        output_dir: Directory to search. Defaults to
+            ``<Inductor cache root>/torch-spyre/ffdc_reports``, where the
+            cache root is ``$TORCHINDUCTOR_CACHE_DIR`` or else
+            ``<tempdir>/torchinductor_<user>``. Falls back to
+            ``<tempdir>/torch-spyre-ffdc`` if that root cannot be resolved.
 
     Returns:
         Parsed JSON dict of the most recent valid report, or None. The

@@ -63,14 +63,18 @@ The same function is available as
 
 ## Where reports are stored
 
-Default directory (respects `TORCHINDUCTOR_CACHE_DIR`):
+Default directory:
 
 ```
-~/.cache/torch/inductor/torch-spyre/ffdc_reports/
+<tempdir>/torchinductor_<user>/torch-spyre/ffdc_reports/
 ```
 
-If the Inductor cache is unavailable, reports fall back to the system
-temp directory:
+Example on Linux: `/tmp/torchinductor_<user>/torch-spyre/ffdc_reports/`.
+When `TORCHINDUCTOR_CACHE_DIR` is set, reports land under
+`$TORCHINDUCTOR_CACHE_DIR/torch-spyre/ffdc_reports/` instead.
+
+If resolving that Inductor cache root fails for any reason, reports fall
+back to:
 
 ```
 <tempdir>/torch-spyre-ffdc/
@@ -131,8 +135,8 @@ tree left over from an earlier, unrelated run can still surface in
 `artifacts.paths`.
 
 It also searches the newest kernel directory under the Spyre Inductor
-cache (`~/.cache/torch/inductor/inductor-spyre/` by default, also
-respecting `TORCHINDUCTOR_CACHE_DIR`) for bundle artifacts.
+cache (`$TORCHINDUCTOR_CACHE_DIR/inductor-spyre/` when set, else
+`<tempdir>/torchinductor_<user>/inductor-spyre/`) for bundle artifacts.
 
 To keep capture best-effort and bounded, the search is intentionally
 limited:
