@@ -48,24 +48,36 @@ give FFDC more artifact paths to link into the report.
 
 ## Failure categories and hook locations
 
-The closed set of categories emitted by hooks today is
-`KNOWN_FAILURE_CATEGORIES` in `torch_spyre/profiler/_ffdc.py`:
+FFDC uses a small preferred vocabulary for `failure.category`. The
+maintainer source of truth is `KNOWN_FAILURE_CATEGORIES` in
+`torch_spyre/profiler/_ffdc.py` (import from that module; it is not
+re-exported on `torch_spyre.profiler`). The auto-hook subset is
+`HOOK_FAILURE_CATEGORIES` in the same file.
 
-`compile`, `runtime_launch`, `unimplemented`, `unknown`.
+**Hook-emitted labels** (auto-capture sites today):
 
-| `failure.category` | When it fires | Hook location |
+- `compile`
+- `runtime_launch`
+- `unimplemented`
+
+**Capture-time labels** (not written by auto-hooks):
+
+- `unknown` — default for manual `collect()` / `try_collect()`, and the
+  value empty category input normalizes to
+
+| `failure.category` | When it fires | Hook / owning code |
 |---|---|---|
 | `compile` | `torch.compile()` fails in the Spyre frontend or during `dxp_standalone` bundle compilation | `torch_spyre/_inductor/__init__.py`, `torch_spyre/execution/async_compile.py` |
 | `runtime_launch` | Kernel launch or `launch_jobplan` fails on device | `torch_spyre/execution/kernel_runner.py` (`SpyreSDSCKernelRunner`) |
 | `unimplemented` | An op reaches the runtime without a Spyre lowering | `torch_spyre/execution/kernel_runner.py` (`SpyreUnimplementedRunner`) |
-| `unknown` | Manual `collect()` / empty category normalized at capture time | `torch_spyre/profiler/_ffdc.py` |
+| `unknown` | Manual `collect()` / empty category normalized at capture time | `torch_spyre/profiler/_ffdc.py` (no auto-hook) |
 
-These strings are exactly what hooks write into `failure.category`.
-Empty category input normalizes to `unknown` at collect time; other
-non-empty strings are stored as-is in the JSON body (filename characters
-outside `[A-Za-z0-9_-]` are sanitized for the on-disk name only).
-`get_diagnostic_report()` accepts any report whose `failure.category` is
-a string — it does not reject unknown labels.
+`collect()` does **not** reject non-vocabulary strings: empty input
+becomes `unknown`; other non-empty strings are stored as-is in the JSON
+body (filename characters outside `[A-Za-z0-9_-]` are sanitized for the
+on-disk name only). `get_diagnostic_report()` accepts any report whose
+`failure.category` is a string — it does not restrict to
+`KNOWN_FAILURE_CATEGORIES`.
 
 FFDC never changes program behaviour: hooks use nested `try/except` so
 a collection failure cannot mask the original exception.
@@ -86,24 +98,29 @@ that category.
   via `try_collect(..., failure_category=CATEGORY_COMPILE)`.
 - **Owning hooks:** both sites write the same `compile` label today.
 - **Triage first:** `failure.exception_type` / `message` / `traceback`;
-  `artifacts.paths` (especially `fx_graph_*.py`, `ir_*.txt`, `output_code.py`,
-  `sdsc_*.json`, `*.mlir`); `environment.TORCH_COMPILE_DEBUG` and
-  `DUMP_SPYRE_CODE`.
-- **Interpretation:** a frontend graph/lowering failure and a DeepTools /
-  bundle-compile failure look the same in `failure.category`. Distinguish
-  them from the traceback frames and which artifact paths are present
-  (Inductor debug tree vs Spyre cache / `sdsc_*.json`).
+  then check whether `runtime.kernel_name` / `runtime.code_dir` are set
+  (bundle / `dxp_standalone` path passes these; the frontend hook does
+  not); then `artifacts.paths` (`fx_graph_*.py`, `ir_*.txt`,
+  `output_code.py`, `sdsc_*.json`, `*.mlir`) and
+  `environment.TORCH_COMPILE_DEBUG` / `DUMP_SPYRE_CODE`.
+- **Interpretation:** frontend graph/lowering failures and DeepTools /
+  bundle-compile failures share `failure.category="compile"`. Prefer
+  `runtime.kernel_name` / `runtime.code_dir` as the first discriminator,
+  then traceback frames and which artifact paths are present (Inductor
+  debug tree vs Spyre cache / `sdsc_*.json`).
 - **Known gap:** no separate frontend vs `dxp_standalone` category yet
-  (planned; see Known limitations).
+  (planned; see Known limitations / Deferred category gaps).
 
 #### `runtime_launch`
 
 - **Trigger path:** `SpyreSDSCKernelRunner.run` decorated with
   `@with_ffdc(CATEGORY_RUNTIME_LAUNCH, ...)`.
 - **Owning hook:** `torch_spyre/execution/kernel_runner.py`.
-- **Triage first:** `failure.*`; `runtime.kernel_name` and `runtime.code_dir`;
-  `hardware_state.spyre_available`; any `sdsc_*.json` / `*.mlir` under
-  `artifacts.paths` or the `code_dir` tree.
+- **Triage first:** `failure.*`; `runtime.kernel_name` and
+  `runtime.code_dir` (path strings on the report — FFDC does not inventory
+  that tree into `artifacts.paths`); `hardware_state.spyre_available`;
+  then any matching paths already listed under `artifacts.paths`, or open
+  `code_dir` on the host that produced the report.
 - **Interpretation:** the compiled kernel existed far enough to attempt
   device launch (`launch_jobplan` / prepare path). Prefer hardware and
   runtime context over Inductor IR when the traceback is inside the runner.
@@ -120,10 +137,11 @@ that category.
 
 #### `unknown`
 
-- **Trigger path:** manual `collect()` / `try_collect()` without a category,
-  or empty category input normalized in `_normalize_failure_category`.
-- **Owning code:** `torch_spyre/profiler/_ffdc.py` (no auto-hook emits this
-  on its own).
+- **Trigger path:** manual `collect()` / `try_collect()` without a
+  category, or empty category input normalized in
+  `_normalize_failure_category`.
+- **Owning code:** `torch_spyre/profiler/_ffdc.py` (no auto-hook emits
+  this on its own).
 - **Triage first:** `failure.*` and `collector.*`; treat other sections as
   best-effort context only.
 - **Interpretation:** do not assume a compile or launch failure. Confirm
@@ -131,13 +149,17 @@ that category.
 
 ### Deferred category gaps
 
-No additional `failure.category` values are emitted by hooks today. The
-following are **explicitly deferred** (not missing from the closed set):
+No additional auto-hook labels exist beyond the three hook-emitted values
+above. The following are **explicitly deferred** (documented gaps, not
+missing vocabulary entries):
 
 - Separate frontend-compile vs `dxp_standalone` / deeptools categories
   (today both use `compile`)
 - Device-side failure category beyond `runtime_launch`
 - Profiling / capture-pipeline failure category
+
+These remain deferred in-docs for this enumeration; follow-up issues can
+be filed when implementation starts.
 
 ## Where reports are stored
 

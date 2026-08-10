@@ -23,8 +23,8 @@ Collects diagnostic context automatically on failure:
   - hardware_state: placeholder until Spyre access is available
 
 Usage:
-    from torch_spyre.profiler._ffdc import collect, REQUIRED_FIELDS
-    report = collect(exc, failure_category="compile")
+    from torch_spyre.profiler._ffdc import CATEGORY_COMPILE, collect, REQUIRED_FIELDS
+    report = collect(exc, failure_category=CATEGORY_COMPILE)
 """
 
 import functools
@@ -47,21 +47,24 @@ T = TypeVar("T")
 _FutureTimeoutError = TimeoutError
 
 
-# Failure category constants — closed set emitted by hooks / collect today.
+# Preferred failure.category vocabulary (hook labels + capture-time unknown).
 # Keep in sync with docs/source/user_guide/profiling/ffdc.md.
 CATEGORY_COMPILE = "compile"
 CATEGORY_RUNTIME_LAUNCH = "runtime_launch"
 CATEGORY_UNIMPLEMENTED = "unimplemented"
 CATEGORY_UNKNOWN = "unknown"
 
-KNOWN_FAILURE_CATEGORIES = frozenset(
+# Labels auto-hooks write today (excludes CATEGORY_UNKNOWN).
+HOOK_FAILURE_CATEGORIES = frozenset(
     {
         CATEGORY_COMPILE,
         CATEGORY_RUNTIME_LAUNCH,
         CATEGORY_UNIMPLEMENTED,
-        CATEGORY_UNKNOWN,
     }
 )
+
+# Preferred vocabulary for reports: hook labels plus capture-time unknown.
+KNOWN_FAILURE_CATEGORIES = frozenset({*HOOK_FAILURE_CATEGORIES, CATEGORY_UNKNOWN})
 
 # Fields required to consider a report "complete"
 REQUIRED_FIELDS = [
@@ -159,7 +162,8 @@ def _normalize_failure_category(failure_category: Optional[str]) -> str:
     passed through so intentional custom values remain readable in the JSON
     body; filename safety is handled separately via ``_is_safe_category_char``.
     Retrieval only requires ``failure.category`` to be a string — it does not
-    restrict to ``KNOWN_FAILURE_CATEGORIES``.
+    restrict to ``KNOWN_FAILURE_CATEGORIES``. Prefer hook / manual callers pass
+    a value from ``KNOWN_FAILURE_CATEGORIES``.
     """
     if not failure_category:
         return CATEGORY_UNKNOWN
@@ -334,7 +338,7 @@ def _collect_hardware_state() -> dict:
 
 def collect(
     exc: Optional[BaseException] = None,
-    failure_category: str = CATEGORY_UNKNOWN,
+    failure_category: Optional[str] = CATEGORY_UNKNOWN,
     kernel_name: Optional[str] = None,
     code_dir: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -347,7 +351,8 @@ def collect(
         failure_category: Prefer a value from ``KNOWN_FAILURE_CATEGORIES``
             (``compile``, ``runtime_launch``, ``unimplemented``, ``unknown``).
             Empty / missing values normalize to ``unknown``; other non-empty
-            strings are stored as-is in ``failure.category``.
+            strings are stored as-is in ``failure.category``. Auto-hooks emit
+            only values in ``HOOK_FAILURE_CATEGORIES``.
         kernel_name: Kernel name from SpyreSDSCKernelRunner if available.
         code_dir: Code directory from SpyreSDSCKernelRunner if available.
         output_dir: Directory to write report JSON. Defaults to
