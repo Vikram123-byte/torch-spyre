@@ -47,11 +47,21 @@ T = TypeVar("T")
 _FutureTimeoutError = TimeoutError
 
 
-# Failure category constants
+# Failure category constants — closed set emitted by hooks / collect today.
+# Keep in sync with docs/source/user_guide/profiling/ffdc.md.
 CATEGORY_COMPILE = "compile"
 CATEGORY_RUNTIME_LAUNCH = "runtime_launch"
 CATEGORY_UNIMPLEMENTED = "unimplemented"
 CATEGORY_UNKNOWN = "unknown"
+
+KNOWN_FAILURE_CATEGORIES = frozenset(
+    {
+        CATEGORY_COMPILE,
+        CATEGORY_RUNTIME_LAUNCH,
+        CATEGORY_UNIMPLEMENTED,
+        CATEGORY_UNKNOWN,
+    }
+)
 
 # Fields required to consider a report "complete"
 REQUIRED_FIELDS = [
@@ -140,6 +150,20 @@ def _default_output_dir() -> Path:
 def _is_safe_category_char(c: str) -> bool:
     """Return True if ``c`` is allowed in an FFDC report category filename."""
     return c.isascii() and (c.isalnum() or c in "_-")
+
+
+def _normalize_failure_category(failure_category: Optional[str]) -> str:
+    """Normalize a capture-time category string for ``failure.category``.
+
+    Empty / missing values become ``CATEGORY_UNKNOWN``. Other strings are
+    passed through so intentional custom values remain readable in the JSON
+    body; filename safety is handled separately via ``_is_safe_category_char``.
+    Retrieval only requires ``failure.category`` to be a string — it does not
+    restrict to ``KNOWN_FAILURE_CATEGORIES``.
+    """
+    if not failure_category:
+        return CATEGORY_UNKNOWN
+    return failure_category
 
 
 def _report_sort_key(report_path: Path) -> Optional[str]:
@@ -310,7 +334,7 @@ def _collect_hardware_state() -> dict:
 
 def collect(
     exc: Optional[BaseException] = None,
-    failure_category: str = "unknown",
+    failure_category: str = CATEGORY_UNKNOWN,
     kernel_name: Optional[str] = None,
     code_dir: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -320,7 +344,10 @@ def collect(
 
     Args:
         exc: The exception that triggered FFDC (or None for manual call).
-        failure_category: One of compile, runtime_launch, unimplemented, unknown.
+        failure_category: Prefer a value from ``KNOWN_FAILURE_CATEGORIES``
+            (``compile``, ``runtime_launch``, ``unimplemented``, ``unknown``).
+            Empty / missing values normalize to ``unknown``; other non-empty
+            strings are stored as-is in ``failure.category``.
         kernel_name: Kernel name from SpyreSDSCKernelRunner if available.
         code_dir: Code directory from SpyreSDSCKernelRunner if available.
         output_dir: Directory to write report JSON. Defaults to
@@ -336,8 +363,7 @@ def collect(
     profiler). When disabled, returns the same top-level schema with empty
     sections and no filesystem or thread work.
     """
-    if not failure_category:
-        failure_category = CATEGORY_UNKNOWN
+    failure_category = _normalize_failure_category(failure_category)
 
     if not _is_ffdc_enabled():
         return {

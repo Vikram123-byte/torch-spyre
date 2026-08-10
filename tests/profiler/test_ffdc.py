@@ -25,9 +25,11 @@ from torch_spyre.profiler._ffdc import (
     CATEGORY_RUNTIME_LAUNCH,
     CATEGORY_UNIMPLEMENTED,
     CATEGORY_UNKNOWN,
+    KNOWN_FAILURE_CATEGORIES,
     _call_with_timeout,
     _default_output_dir,
     _MAX_REPORTS,
+    _normalize_failure_category,
     _prune_old_reports,
     _report_sort_key,
     REQUIRED_FIELDS,
@@ -244,6 +246,71 @@ class TestFfdcCollect:
             except ValueError as exc:
                 report = self._collect_to_tmpdir(exc, failure_category=category)
             assert report["failure"]["category"] == category
+
+    def test_known_failure_categories_closed_set(self):
+        assert KNOWN_FAILURE_CATEGORIES == frozenset(
+            {
+                CATEGORY_COMPILE,
+                CATEGORY_RUNTIME_LAUNCH,
+                CATEGORY_UNIMPLEMENTED,
+                CATEGORY_UNKNOWN,
+            }
+        )
+        for category in KNOWN_FAILURE_CATEGORIES:
+            assert _normalize_failure_category(category) == category
+
+    def test_normalize_failure_category_empty_to_unknown(self):
+        assert _normalize_failure_category("") == CATEGORY_UNKNOWN
+        assert _normalize_failure_category(None) == CATEGORY_UNKNOWN
+
+    def test_normalize_failure_category_passthrough_nonempty(self):
+        # Custom labels stay in the JSON body; retrieval only requires a str.
+        assert _normalize_failure_category("custom_label") == "custom_label"
+
+    def test_hooks_emit_only_known_categories(self):
+        """Hook sites must reference CATEGORY_* values from the closed set."""
+        repo = Path(__file__).resolve().parents[2]
+        expected = {
+            repo / "torch_spyre" / "_inductor" / "__init__.py": {"CATEGORY_COMPILE"},
+            repo / "torch_spyre" / "execution" / "async_compile.py": {
+                "CATEGORY_COMPILE"
+            },
+            repo / "torch_spyre" / "execution" / "kernel_runner.py": {
+                "CATEGORY_RUNTIME_LAUNCH",
+                "CATEGORY_UNIMPLEMENTED",
+            },
+        }
+        name_to_value = {
+            "CATEGORY_COMPILE": CATEGORY_COMPILE,
+            "CATEGORY_RUNTIME_LAUNCH": CATEGORY_RUNTIME_LAUNCH,
+            "CATEGORY_UNIMPLEMENTED": CATEGORY_UNIMPLEMENTED,
+        }
+        for path, names in expected.items():
+            text = path.read_text()
+            for name in names:
+                assert name in text, f"{path} must reference {name}"
+                assert name_to_value[name] in KNOWN_FAILURE_CATEGORIES
+            # Hooks must not hard-code category string literals.
+            assert 'failure_category="' not in text
+            assert "failure_category='" not in text
+            assert '@with_ffdc("' not in text
+            assert "@with_ffdc('" not in text
+
+    def test_ffdc_docs_list_known_failure_categories(self):
+        docs = (
+            Path(__file__).resolve().parents[2]
+            / "docs"
+            / "source"
+            / "user_guide"
+            / "profiling"
+            / "ffdc.md"
+        )
+        text = docs.read_text()
+        for category in sorted(KNOWN_FAILURE_CATEGORIES):
+            assert f"`{category}`" in text
+        assert "KNOWN_FAILURE_CATEGORIES" in text
+        assert "Field / support enumeration" in text
+        assert "Deferred category gaps" in text
 
     def test_report_filename_contains_category(self):
         try:
