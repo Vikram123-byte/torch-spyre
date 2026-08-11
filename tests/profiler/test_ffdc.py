@@ -21,7 +21,8 @@ import pytest
 from torch_spyre import make_spyre_module  # type: ignore[attr-defined]
 from torch_spyre.profiler import get_diagnostic_report as profiler_get_diagnostic_report
 from torch_spyre.profiler._ffdc import (
-    CATEGORY_COMPILE,
+    CATEGORY_COMPILE_BACKEND,
+    CATEGORY_COMPILE_FRONTEND,
     CATEGORY_RUNTIME_LAUNCH,
     CATEGORY_UNIMPLEMENTED,
     CATEGORY_UNKNOWN,
@@ -80,7 +81,7 @@ def _assert_get_diagnostic_report_skips_newest(
 
 @pytest.fixture(autouse=True)
 def _enable_ffdc(monkeypatch):
-    monkeypatch.setenv("USE_SPYRE_PROFILER", "1")
+    monkeypatch.setenv("TORCH_SPYRE_FFDC", "1")
 
 
 def _stub_module(monkeypatch, name, **attrs):
@@ -143,13 +144,18 @@ class TestFfdcCollect:
         try:
             raise RuntimeError("something went wrong")
         except RuntimeError as exc:
-            report = self._collect_to_tmpdir(exc, failure_category=CATEGORY_COMPILE)
+            report = self._collect_to_tmpdir(
+                exc, failure_category=CATEGORY_COMPILE_FRONTEND
+            )
 
-        assert report["failure"]["category"] == CATEGORY_COMPILE
+        assert report["failure"]["category"] == CATEGORY_COMPILE_FRONTEND
         assert report["failure"]["exception_type"] == "RuntimeError"
         assert "something went wrong" in report["failure"]["message"]
         assert isinstance(report["failure"]["traceback"], str)
         assert "RuntimeError" in report["failure"]["traceback"]
+        assert report["failure"]["file"] is not None
+        assert isinstance(report["failure"]["lineno"], int)
+        assert report["failure"]["lineno"] > 0
 
     def test_traceback_is_joined_string(self):
         try:
@@ -193,7 +199,7 @@ class TestFfdcCollect:
             _call_with_timeout(lambda: time.sleep(5), 0.05)
 
     def test_collect_returns_early_when_disabled(self, monkeypatch):
-        monkeypatch.setenv("USE_SPYRE_PROFILER", "0")
+        monkeypatch.setenv("TORCH_SPYRE_FFDC", "0")
         with tempfile.TemporaryDirectory() as tmp:
             report = collect(None, failure_category=CATEGORY_UNKNOWN, output_dir=tmp)
         assert report["collector"]["disabled"] is True
@@ -209,6 +215,15 @@ class TestFfdcCollect:
             "collector",
         ):
             assert key in report
+
+    def test_use_spyre_profiler_does_not_enable_ffdc(self, monkeypatch):
+        # FFDC must not share the CMake / Kineto USE_SPYRE_PROFILER build flag.
+        monkeypatch.delenv("TORCH_SPYRE_FFDC", raising=False)
+        monkeypatch.setenv("USE_SPYRE_PROFILER", "1")
+        with tempfile.TemporaryDirectory() as tmp:
+            report = collect(None, failure_category=CATEGORY_UNKNOWN, output_dir=tmp)
+        assert report["collector"].get("disabled") is True
+        assert list(Path(tmp).glob("ffdc_*.json")) == []
 
     def test_collect_never_raises(self):
         # collect() must be best-effort; write failures must not propagate.
@@ -234,7 +249,8 @@ class TestFfdcCollect:
 
     def test_category_constants_match_report(self):
         for category in (
-            CATEGORY_COMPILE,
+            CATEGORY_COMPILE_FRONTEND,
+            CATEGORY_COMPILE_BACKEND,
             CATEGORY_RUNTIME_LAUNCH,
             CATEGORY_UNIMPLEMENTED,
             CATEGORY_UNKNOWN,
@@ -250,9 +266,11 @@ class TestFfdcCollect:
             raise ValueError("x")
         except ValueError as exc:
             with tempfile.TemporaryDirectory() as tmp:
-                report = collect(exc, failure_category=CATEGORY_COMPILE, output_dir=tmp)
+                report = collect(
+                    exc, failure_category=CATEGORY_COMPILE_FRONTEND, output_dir=tmp
+                )
                 fname = Path(report["_report_path"]).name
-        assert fname.startswith("ffdc_compile_")
+        assert fname.startswith("ffdc_compile_frontend_")
         assert ".json" in fname
 
     def test_empty_failure_category_normalizes_to_unknown(self):
@@ -367,7 +385,9 @@ class TestFfdcCollect:
             try:
                 raise RuntimeError("first")
             except RuntimeError as exc:
-                r1 = collect(exc, failure_category=CATEGORY_COMPILE, output_dir=tmp)
+                r1 = collect(
+                    exc, failure_category=CATEGORY_COMPILE_FRONTEND, output_dir=tmp
+                )
             try:
                 raise RuntimeError("second")
             except RuntimeError as exc:
@@ -452,7 +472,9 @@ class TestFfdcCollect:
                     raise RuntimeError("path test")
                 except RuntimeError as exc:
                     written = collect(
-                        exc, failure_category=CATEGORY_COMPILE, output_dir="reports"
+                        exc,
+                        failure_category=CATEGORY_COMPILE_FRONTEND,
+                        output_dir="reports",
                     )
 
                 result = get_diagnostic_report(output_dir="reports")
@@ -470,8 +492,8 @@ class TestFfdcCollect:
             assert report_path == written_path
 
     def test_get_diagnostic_report_works_when_capture_disabled(self, monkeypatch):
-        # Retrieval is not gated on USE_SPYRE_PROFILER; only collect() is.
-        monkeypatch.setenv("USE_SPYRE_PROFILER", "0")
+        # Retrieval is not gated on TORCH_SPYRE_FFDC; only collect() is.
+        monkeypatch.setenv("TORCH_SPYRE_FFDC", "0")
         with tempfile.TemporaryDirectory() as tmp:
             report_file = _write_ffdc_report(
                 Path(tmp), _VALID_REPORT_NAME, _VALID_REPORT_JSON
@@ -552,6 +574,68 @@ class TestFfdcCollect:
             except ValueError as exc:
                 collect(exc, failure_category=CATEGORY_UNKNOWN, output_dir=tmp)
             assert len(list(d.glob("ffdc_*.json"))) <= _MAX_REPORTS
+
+
+class TestFfdcCompileFx:
+    def test_compile_fx_spyre_failure_triggers_ffdc_frontend(self, monkeypatch):
+        """Spyre compile_fx failures must try_collect with compile_frontend."""
+        import sys
+        import types
+        from enum import IntEnum
+
+        import torch._inductor.compile_fx as cfx
+
+        from torch_spyre.constants import DEVICE_NAME
+
+        class _ElementArrangement(IntEnum):
+            STANDARD = 0
+            DL16_TO_FP32 = 1
+            FP32_TO_DL16 = 2
+            EXX2 = 3
+            QFP8CH = 4
+
+        if "torch_spyre._C" not in sys.modules:
+            _c = types.ModuleType("torch_spyre._C")
+            _c.ElementArrangement = _ElementArrangement
+            _c.launch_jobplan = lambda *a, **k: None
+            _c.prepare_kernel = lambda *a, **k: None
+            monkeypatch.setitem(sys.modules, "torch_spyre._C", _c)
+
+        inductor = _reimport(monkeypatch, "torch_spyre._inductor")
+        calls: list[dict] = []
+
+        def fake_try_collect(exc, **kwargs):
+            calls.append(kwargs)
+
+        monkeypatch.setattr(inductor, "try_collect", fake_try_collect)
+        # Install a fresh wrapper around a trivial failing compile_fx.
+        monkeypatch.setattr(cfx, "_spyre_wrapped", False, raising=False)
+
+        def boom(gm, example_inputs, *args, **kwargs):
+            raise RuntimeError("frontend compile boom")
+
+        monkeypatch.setattr(cfx, "compile_fx", boom)
+        inductor.enable_spyre_compile_fx_wrapper()
+
+        class _DeviceNode:
+            kwargs = {"device": DEVICE_NAME}
+
+        class _FakeGM:
+            class graph:
+                nodes = [_DeviceNode()]
+
+                @staticmethod
+                def output_node():
+                    class _Node:
+                        args = ()
+
+                    return _Node()
+
+        with pytest.raises((AttributeError, RuntimeError)):
+            cfx.compile_fx(_FakeGM(), [])
+
+        assert len(calls) == 1
+        assert calls[0]["failure_category"] == CATEGORY_COMPILE_FRONTEND
 
 
 class TestFfdcAsyncCompile:
@@ -639,7 +723,7 @@ class TestFfdcAsyncCompile:
             mod.SpyreAsyncCompile().sdsc("test_kernel", [])
 
         assert len(calls) == 1
-        assert calls[0]["failure_category"] == CATEGORY_COMPILE
+        assert calls[0]["failure_category"] == CATEGORY_COMPILE_BACKEND
         assert calls[0]["kernel_name"] == "test_kernel"
         assert calls[0]["code_dir"] == out_dir
 

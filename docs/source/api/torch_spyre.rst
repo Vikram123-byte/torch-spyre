@@ -306,16 +306,20 @@ FFDC (First Failure Data Capture)
    uploads the report directory as an artifact.
 
    Reports are written automatically when a failure is captured and
-   ``USE_SPYRE_PROFILER=1`` is set. Retrieval via this function does not
-   require that environment variable.
+   ``TORCH_SPYRE_FFDC=1`` is set. Retrieval via this function does not
+   require that environment variable. ``TORCH_SPYRE_FFDC`` is intentionally
+   separate from ``USE_SPYRE_PROFILER`` (the CMake / Kineto profiler build
+   flag).
 
    Each successful capture writes a new file named
    ``ffdc_<category>_<YYYYMMDDTHHMMSS>_<microseconds>_<pid>.json``; earlier
-   reports are not overwritten. The directory retains the newest 50 files (by
-   modification time) and deletes older ones. Identify a report by that
-   filename (category, UTC timestamp, process id) or by fields inside the JSON
-   such as ``metadata.timestamp``, ``metadata.pid``, ``metadata.host``, and
-   ``failure.category``.
+   reports are not overwritten. Categories include ``compile_frontend``,
+   ``compile_backend``, ``runtime_launch``, ``unimplemented``, and
+   ``unknown``. The directory retains the newest 50 files (by modification
+   time) and deletes older ones. Identify a report by that filename
+   (category, UTC timestamp, process id) or by fields inside the JSON such
+   as ``metadata.timestamp``, ``metadata.pid``, ``metadata.host``,
+   ``failure.category``, ``failure.file``, and ``failure.lineno``.
 
    Candidates are walked newest-first by the timestamp embedded in the
    filename. Unreadable or structurally invalid files (for example corrupted
@@ -326,7 +330,8 @@ FFDC (First Failure Data Capture)
    :param output_dir: Directory to search. If ``None``, uses
        ``<Inductor cache root>/torch-spyre/ffdc_reports``, where the cache
        root is ``$TORCHINDUCTOR_CACHE_DIR`` or else
-       ``<tempdir>/torchinductor_<user>``. Falls back to
+       ``<tempdir>/torchinductor_<user>`` from Inductor ``cache_dir()``
+       (not ``~/.cache/torch/inductor``). Falls back to
        ``<tempdir>/torch-spyre-ffdc`` if that root cannot be resolved.
    :type output_dir: str, optional
 

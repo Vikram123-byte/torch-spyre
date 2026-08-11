@@ -17,14 +17,14 @@ FFDC (First Failure Data Capture) collector for torch-spyre.
 
 Collects diagnostic context automatically on failure:
   - metadata: timestamp, versions, env
-  - failure: category, exception, traceback
+  - failure: category, exception, traceback, file, lineno
   - artifacts: paths to compiler outputs if present
   - runtime: kernel name, code_dir when available
   - hardware_state: placeholder until Spyre access is available
 
 Usage:
     from torch_spyre.profiler._ffdc import collect, REQUIRED_FIELDS
-    report = collect(exc, failure_category="compile")
+    report = collect(exc, failure_category="compile_frontend")
 """
 
 import functools
@@ -47,8 +47,10 @@ T = TypeVar("T")
 _FutureTimeoutError = TimeoutError
 
 
-# Failure category constants
-CATEGORY_COMPILE = "compile"
+# Failure category constants. The category also encodes where the hook
+# fired: frontend compiler, backend (bundle) compiler, or runtime.
+CATEGORY_COMPILE_FRONTEND = "compile_frontend"
+CATEGORY_COMPILE_BACKEND = "compile_backend"
 CATEGORY_RUNTIME_LAUNCH = "runtime_launch"
 CATEGORY_UNIMPLEMENTED = "unimplemented"
 CATEGORY_UNKNOWN = "unknown"
@@ -180,13 +182,13 @@ _ENV_KEYS = [
     "TORCH_LOGS",
     "TORCHINDUCTOR_FORCE_DISABLE_CACHES",
     "SENCORES",
-    "USE_SPYRE_PROFILER",
+    "TORCH_SPYRE_FFDC",
 ]
 
 
 def _is_ffdc_enabled() -> bool:
-    """Return True when auto-capture is enabled via USE_SPYRE_PROFILER=1."""
-    return os.environ.get("USE_SPYRE_PROFILER") == "1"
+    """Return True when auto-capture is enabled via TORCH_SPYRE_FFDC=1."""
+    return os.environ.get("TORCH_SPYRE_FFDC") == "1"
 
 
 def _safe_torch_version() -> str:
@@ -320,7 +322,8 @@ def collect(
 
     Args:
         exc: The exception that triggered FFDC (or None for manual call).
-        failure_category: One of compile, runtime_launch, unimplemented, unknown.
+        failure_category: One of compile_frontend, compile_backend,
+            runtime_launch, unimplemented, unknown.
         kernel_name: Kernel name from SpyreSDSCKernelRunner if available.
         code_dir: Code directory from SpyreSDSCKernelRunner if available.
         output_dir: Directory to write report JSON. Defaults to
@@ -332,9 +335,9 @@ def collect(
     Returns:
         dict with the full FFDC report.
 
-    Auto-capture is gated on ``USE_SPYRE_PROFILER=1`` (same opt-in as the Spyre
-    profiler). When disabled, returns the same top-level schema with empty
-    sections and no filesystem or thread work.
+    Auto-capture is gated on ``TORCH_SPYRE_FFDC=1``. When disabled, returns
+    the same top-level schema with empty sections and no filesystem or
+    thread work.
     """
     if not failure_category:
         failure_category = CATEGORY_UNKNOWN
@@ -388,10 +391,16 @@ def collect(
             failure["traceback"] = "".join(
                 traceback.format_exception(type(exc), exc, exc.__traceback__)
             )
+            # Innermost frame = where the exception was raised.
+            frames = traceback.extract_tb(exc.__traceback__)
+            failure["file"] = frames[-1].filename if frames else None
+            failure["lineno"] = frames[-1].lineno if frames else None
         else:
             failure["exception_type"] = None
             failure["message"] = "manual collection (no exception)"
             failure["traceback"] = None
+            failure["file"] = None
+            failure["lineno"] = None
     except Exception as e:
         collector_errors.append(f"failure: {e}")
 
@@ -570,8 +579,9 @@ def get_diagnostic_report(
     # Sort by the timestamp embedded in the filename, not by the full filename.
     # Filenames are ffdc_{category}_{YYYYMMDDTHHMMSS}_{microseconds}_{pid}.json.
     # Sorting by the full name groups by category first, so a stale "unknown"
-    # report would outrank a fresh "compile" report.  Sorting by st_mtime fails
-    # on filesystems with 1-second resolution (same-second writes are misordered).
+    # report would outrank a fresh "compile_frontend" report. Sorting by
+    # st_mtime fails on filesystems with 1-second resolution (same-second
+    # writes are misordered).
     # rsplit from the right handles category names that contain underscores
     # (e.g. runtime_launch).  Valid names split into:
     # [ffdc_{category}, YYYYMMDDTHHMMSS, microseconds, pid].

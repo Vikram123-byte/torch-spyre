@@ -10,17 +10,21 @@ failure — exception, environment, nearby compiler artifacts, runtime
 context, and hardware availability — before the original error
 propagates.
 
-Capture is opt-in via `USE_SPYRE_PROFILER=1`. Retrieval via
+Capture is opt-in via `TORCH_SPYRE_FFDC=1`. Retrieval via
 `torch.spyre.get_diagnostic_report()` does **not** require that
 variable. For field-level API details see
 [`get_diagnostic_report`](../../api/torch_spyre.rst).
 
+Auto-capture hooks landed in
+[PR #2704](https://github.com/torch-spyre/torch-spyre/pull/2704); this
+guide covers the retrieval API and report schema.
+
 ## Quick start
 
 ```bash
-export USE_SPYRE_PROFILER=1
-export TORCH_COMPILE_DEBUG=1
-export DUMP_SPYRE_CODE=1   # optional; adds sdsc_*.json and *.mlir paths
+export TORCH_SPYRE_FFDC=1
+export TORCH_COMPILE_DEBUG=1   # optional; adds torch_compile_debug/ paths
+export DUMP_SPYRE_CODE=1       # optional; adds sdsc_*.json and *.mlir paths
 python your_script.py
 ```
 
@@ -33,27 +37,36 @@ import torch_spyre
 report = torch.spyre.get_diagnostic_report()
 if report is not None:
     print(report["failure"]["category"])
+    print(report["failure"]["file"], report["failure"]["lineno"])
     print(report["failure"]["message"])
     print(report["_report_path"])
 ```
 
-`USE_SPYRE_PROFILER=1` controls whether new reports are written.
+`TORCH_SPYRE_FFDC=1` controls whether new reports are written.
 `get_diagnostic_report()` can still read already-written reports even if
 that variable is unset later.
 
-With `USE_SPYRE_PROFILER=1` set, compile, runtime-launch, and
-unimplemented-operation hooks write a report automatically.
-`TORCH_COMPILE_DEBUG=1` and `DUMP_SPYRE_CODE=1` are optional, but they
-give FFDC more artifact paths to link into the report.
+This gate is intentionally separate from `USE_SPYRE_PROFILER` (the CMake
+/ Kineto profiler build flag). FFDC capture does not require a profiler
+build, and pods do not enable `TORCH_SPYRE_FFDC` by default — set it
+explicitly for the failing run.
+
+With `TORCH_SPYRE_FFDC=1` set, frontend-compile, backend-compile,
+runtime-launch, and unimplemented-operation hooks write a report
+automatically. `TORCH_COMPILE_DEBUG=1` and `DUMP_SPYRE_CODE=1` are
+optional enrichment flags (often already available in debug workflows);
+they are not required for capture, but they give FFDC more artifact
+paths to link into the report.
 
 ## Failure categories and hook locations
 
-| `failure.category` | When it fires | Hook location |
-|---|---|---|
-| `compile` | `torch.compile()` fails in the Spyre frontend or during `dxp_standalone` bundle compilation | `torch_spyre/_inductor/__init__.py`, `torch_spyre/execution/async_compile.py` |
-| `runtime_launch` | Kernel launch or `launch_jobplan` fails on device | `torch_spyre/execution/kernel_runner.py` (`SpyreSDSCKernelRunner`) |
-| `unimplemented` | An op reaches the runtime without a Spyre lowering | `torch_spyre/execution/kernel_runner.py` (`SpyreUnimplementedRunner`) |
-| `unknown` | Manual collection or empty category input normalized at capture time | `torch_spyre/profiler/_ffdc.py` |
+| `failure.category` | Layer | When it fires | Hook location |
+|---|---|---|---|
+| `compile_frontend` | Frontend | `torch.compile()` / Spyre Inductor frontend fails (including decomposition and lowering paths that surface through `compile_fx`) | `torch_spyre/_inductor/__init__.py` |
+| `compile_backend` | Backend | `dxp_standalone` / bundle compilation fails while generating op-spec / MLIR artifacts | `torch_spyre/execution/async_compile.py` |
+| `runtime_launch` | Runtime | Kernel launch or `launch_jobplan` fails on device | `torch_spyre/execution/kernel_runner.py` (`SpyreSDSCKernelRunner`) |
+| `unimplemented` | Runtime | An op reaches the runtime without a Spyre lowering | `torch_spyre/execution/kernel_runner.py` (`SpyreUnimplementedRunner`) |
+| `unknown` | — | Manual collection or empty category input normalized at capture time | `torch_spyre/profiler/_ffdc.py` |
 
 FFDC never changes program behaviour: hooks use nested `try/except` so
 a collection failure cannot mask the original exception.
@@ -63,7 +76,8 @@ The same function is available as
 
 ## Where reports are stored
 
-Default directory:
+Default directory (from Inductor `cache_dir()`, **not**
+`~/.cache/torch/inductor`):
 
 ```
 <tempdir>/torchinductor_<user>/torch-spyre/ffdc_reports/
@@ -87,7 +101,7 @@ overwritten. Filenames follow:
 ffdc_<category>_<YYYYMMDDTHHMMSS>_<microseconds>_<pid>.json
 ```
 
-Example: `ffdc_compile_20250101T120000_123456_42.json`
+Example: `ffdc_compile_frontend_20250101T120000_123456_42.json`
 
 **Retention:** the directory keeps the newest **50** reports (by file
 modification time) and deletes older ones.
@@ -108,9 +122,9 @@ by the filename itself.
 | Section | What to check |
 |---|---|
 | `metadata` | `timestamp`, `host`, `pid`, `python_version`, `torch_version`, `torch_spyre_version`, `platform` — identifies which run produced this report |
-| `failure` | `category`, `exception_type`, `message`, `traceback` — start here |
+| `failure` | `category` (encodes layer: frontend / backend / runtime), `exception_type`, `message`, `file`, `lineno` (innermost raise site), `traceback` — start here |
 | `artifacts` | `paths` lists compiler files found near the failure (`fx_graph_readable.py`, `fx_graph_transformed.py`, `ir_*.txt`, `output_code.py`, `sdsc_*.json`, `*.mlir`, logs) |
-| `environment` | Values of `TORCH_COMPILE_DEBUG`, `DUMP_SPYRE_CODE`, `SENCORES`, and other captured env vars |
+| `environment` | Values of `TORCH_SPYRE_FFDC`, `TORCH_COMPILE_DEBUG`, `DUMP_SPYRE_CODE`, `SENCORES`, and other captured env vars |
 | `runtime` | `kernel_name` and `code_dir` when the failure happened during kernel execution |
 | `hardware_state` | `spyre_available` and any probe notes |
 | `collector` | `completeness_pct`, `missing_fields`, `collector_errors` — whether capture itself succeeded |
@@ -152,13 +166,13 @@ On a Spyre pod, run a workload with capture enabled:
 
 ```bash
 cd /dev/shm/workdir/torch-spyre
-USE_SPYRE_PROFILER=1 TORCH_COMPILE_DEBUG=1 python your_script.py
+TORCH_SPYRE_FFDC=1 TORCH_COMPILE_DEBUG=1 python your_script.py
 ```
 
 To exercise runtime hooks on hardware without a full model failure:
 
 ```bash
-USE_SPYRE_PROFILER=1 TORCH_COMPILE_DEBUG=1 python tools/ffdc_trigger.py
+TORCH_SPYRE_FFDC=1 TORCH_COMPILE_DEBUG=1 python tools/ffdc_trigger.py
 ```
 
 Print the exact report path that `get_diagnostic_report()` would return:
@@ -174,8 +188,9 @@ PY
 ```
 
 Copy it to your laptop (replace `<pod>` and use the exact path printed above —
-the filename's category prefix depends on which hook fired: `compile`,
-`runtime_launch`, or `unimplemented`):
+the filename's category prefix depends on which hook fired:
+`compile_frontend`, `compile_backend`, `runtime_launch`, or
+`unimplemented`):
 
 ```bash
 oc cp <pod>:/exact/path/from/_report_path ./ffdc_report.json
@@ -187,10 +202,12 @@ directory as an artifact.
 
 ## Known limitations
 
-- FFDC is opt-in. If `USE_SPYRE_PROFILER=1` was not set when the failure
+- FFDC is opt-in. If `TORCH_SPYRE_FFDC=1` was not set when the failure
   happened, no new report is written.
-- `failure.category="compile"` currently covers both frontend compile
-  failures and `dxp_standalone` bundle-compile failures.
+- Frontend decomposition / op-spec failures are captured only when they
+  surface through the hooked call sites above (`compile_fx` for
+  frontend, `async_compile.sdsc` for backend bundle generation). There
+  is no separate per-pass category today.
 - `hardware_state` is intentionally lightweight today: it records
   `spyre_available` plus a short note when the probe times out, errors,
   or simply finds no Spyre hardware available (the common case off-pod).
@@ -199,7 +216,6 @@ directory as an artifact.
 
 ## Planned enhancements
 
-- Splitting `compile` into finer-grained frontend vs deeptools categories
 - Parsing IR / bundle artifacts to populate an `error_summary` field in
   the JSON report
 - Additional hooks for device-side and profiling failures
@@ -210,8 +226,11 @@ directory as an artifact.
 
 - [API: `get_diagnostic_report`](../../api/torch_spyre.rst) — parameter
   defaults and return contract
-- [Profiling environment variables](environment_variables.md) — `USE_SPYRE_PROFILER`
+- [Profiling environment variables](environment_variables.md) —
+  `TORCH_SPYRE_FFDC`
 - [Debugging guide](../debugging/index.md) — manual `TORCH_COMPILE_DEBUG`
   artifact inspection
 - [Contributing to the Profiler](../../contributing/profiling.md) — test
   layout and review process
+- Auto-capture hooks:
+  [PR #2704](https://github.com/torch-spyre/torch-spyre/pull/2704)

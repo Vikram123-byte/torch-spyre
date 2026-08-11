@@ -37,7 +37,7 @@ will land with RFC 0601. Day-to-day performance work still goes through
 | Capability | Status | Where |
 |---|---|---|
 | Compiler pipeline logs | Available | [Environment variables](environment_variables.md) |
-| FFDC diagnostic reports on Spyre compile/runtime/unimplemented failures | Available (`USE_SPYRE_PROFILER=1`) | [FFDC user guide](ffdc.md) · [API: `get_diagnostic_report`](../../api/torch_spyre.rst) · [Environment variables](environment_variables.md) |
+| FFDC diagnostic reports on Spyre compile/runtime/unimplemented failures | Available (`TORCH_SPYRE_FFDC=1`) | [FFDC user guide](ffdc.md) · [API: `get_diagnostic_report`](../../api/torch_spyre.rst) · [Environment variables](environment_variables.md) |
 | CPU-side timing with `torch.profiler` | Available | [PyTorch Profiler](pytorch_profiler.md) |
 | Device telemetry (power, temperature, bandwidth) | Available — PF and VF mode (IBM-internal distribution; public release tracked in [#1335][issue-1335]) | [Device monitoring](device_monitoring.md) |
 | Device-side kernel timing via `ProfilerActivity.PrivateUse1` | Preview (requires [`kineto-spyre`][kineto-spyre] wheel) | [PyTorch Profiler](pytorch_profiler.md) |
@@ -49,9 +49,9 @@ will land with RFC 0601. Day-to-day performance work still goes through
 
 ### FFDC quick example
 
-When `USE_SPYRE_PROFILER=1`, compile, kernel-launch, and unimplemented-
-operation failures write a JSON diagnostic report. Retrieve the newest
-valid report with:
+When `TORCH_SPYRE_FFDC=1`, frontend-compile, backend-compile,
+kernel-launch, and unimplemented-operation failures write a JSON
+diagnostic report. Retrieve the newest valid report with:
 
 ```python
 import torch
@@ -60,6 +60,7 @@ import torch_spyre
 report = torch.spyre.get_diagnostic_report()
 if report is not None:
     print(report["failure"]["category"], report["failure"]["message"])
+    print(report["failure"]["file"], report["failure"]["lineno"])
     print(report["_report_path"])
 ```
 
@@ -126,7 +127,7 @@ The module also exposes `reset_accumulated_memory_stats()` and
 ## See also
 
 - [Debugging](../debugging/index.md) — correctness-focused workflow,
-  including `TORCH_COMPILE_DEBUG` artifacts and the `sendnn` bisect
+  including `TORCH_COMPILE_DEBUG` artifacts and FFDC capture
 - [Running Models](../running_models.md) — `torch.compile` usage
 - [Compiler Architecture](../../compiler/architecture.md) — pipeline
   overview
