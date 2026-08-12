@@ -1,10 +1,11 @@
 name: build-test-pytorch-source
 
 # ---------------------------------------------------------------------------
-# Reusable workflow — not triggered directly. Called by the
-# `gate_and_build`/`build_and_test` jobs in
-# push-pytorch-dispatch-to-clickhouse.yaml once a repository_dispatch from
-# pytorch/pytorch has been gated and a commit SHA extracted.
+# Reusable workflow. Normally called by the `gate_and_build`/`build_and_test`
+# jobs in push-pytorch-dispatch-to-clickhouse.yaml once a repository_dispatch
+# from pytorch/pytorch has been gated and a commit SHA extracted. Can also be
+# triggered directly (workflow_dispatch) from the Actions UI to build/test a
+# specific pytorch/pytorch commit on demand.
 #
 # Builds that exact PyTorch commit from source, builds torch-spyre against
 # it (editable, --local-pytorch style), and runs the upstream test suite.
@@ -12,10 +13,18 @@ name: build-test-pytorch-source
 # -> completed) and final test-result counts back into the same ClickHouse
 # row the caller's `ingest` job created, keyed on
 # github.event.client_payload.delivery_id (shared across the whole
-# workflow_call, since the github context always reflects the caller).
+# workflow_call, since the github context always reflects the caller). A
+# manual workflow_dispatch run has no client_payload, so it synthesizes its
+# own delivery_id instead (see "Write dispatch payload to file" below).
 # ---------------------------------------------------------------------------
 on:
   workflow_call:
+    inputs:
+      pytorch_sha:
+        description: Exact pytorch/pytorch commit SHA to build
+        required: true
+        type: string
+  workflow_dispatch:
     inputs:
       pytorch_sha:
         description: Exact pytorch/pytorch commit SHA to build
@@ -75,8 +84,17 @@ jobs:
       - name: Write dispatch payload to file
         env:
           PAYLOAD_JSON: ${{ toJSON(github.event.client_payload) }}
+          # workflow_dispatch (manual UI run) has no client_payload, so the
+          # ingest script would find an empty delivery_id and refuse to
+          # ingest — synthesize one keyed on this run instead.
+          MANUAL_DELIVERY_ID: manual-${{ github.run_id }}
         run: |
-          printf '%s' "$PAYLOAD_JSON" > payload.json
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            printf '{"delivery_id":"%s","event_type":"workflow_dispatch","payload":{"action":"manual_dispatch"}}' \
+              "$MANUAL_DELIVERY_ID" > payload.json
+          else
+            printf '%s' "$PAYLOAD_JSON" > payload.json
+          fi
 
 
       - name: 'Report stage: torch_build'
