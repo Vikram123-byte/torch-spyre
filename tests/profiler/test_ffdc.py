@@ -578,11 +578,17 @@ class TestFfdcCollect:
 
 class TestFfdcCompileFx:
     def test_compile_fx_spyre_failure_triggers_ffdc_frontend(self, monkeypatch):
-        """Spyre compile_fx failures must try_collect with compile_frontend."""
+        """Spyre compile_fx failures must try_collect with compile_frontend.
+
+        Forces the Spyre branch to raise before real compile work so the test
+        covers only the FFDC except-path. Also no-ops ``patch_inductor_fusions``
+        because CI already applied it once and re-entering asserts.
+        """
         import sys
         import types
         from enum import IntEnum
 
+        import torch
         import torch._inductor.compile_fx as cfx
 
         from torch_spyre.constants import DEVICE_NAME
@@ -608,13 +614,21 @@ class TestFfdcCompileFx:
             calls.append(kwargs)
 
         monkeypatch.setattr(inductor, "try_collect", fake_try_collect)
-        # Install a fresh wrapper around a trivial failing compile_fx.
-        monkeypatch.setattr(cfx, "_spyre_wrapped", False, raising=False)
+        monkeypatch.setattr(inductor, "patch_inductor_fusions", lambda: None)
 
-        def boom(gm, example_inputs, *args, **kwargs):
+        def _fail_lazy_init():
             raise RuntimeError("frontend compile boom")
 
-        monkeypatch.setattr(cfx, "compile_fx", boom)
+        monkeypatch.setattr(
+            torch,
+            "spyre",
+            types.SimpleNamespace(
+                _impl=types.SimpleNamespace(_lazy_init=_fail_lazy_init)
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(cfx, "_spyre_wrapped", False, raising=False)
+        monkeypatch.setattr(cfx, "compile_fx", lambda *a, **k: None)
         inductor.enable_spyre_compile_fx_wrapper()
 
         class _DeviceNode:
@@ -631,7 +645,7 @@ class TestFfdcCompileFx:
 
                     return _Node()
 
-        with pytest.raises((AttributeError, RuntimeError)):
+        with pytest.raises(RuntimeError, match="frontend compile boom"):
             cfx.compile_fx(_FakeGM(), [])
 
         assert len(calls) == 1
