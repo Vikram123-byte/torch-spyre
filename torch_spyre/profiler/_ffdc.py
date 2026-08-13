@@ -561,7 +561,9 @@ def get_diagnostic_report(
         output_dir: Directory to search. Defaults to
             ``<Inductor cache root>/torch-spyre/ffdc_reports``, where the
             cache root is ``$TORCHINDUCTOR_CACHE_DIR`` or else
-            ``<tempdir>/torchinductor_<user>``. Falls back to
+            ``<tempdir>/torchinductor_<user>`` (``<tempdir>`` is
+            ``tempfile.gettempdir()``, typically ``/tmp`` on Linux,
+            overridable via ``TMPDIR``). Falls back to
             ``<tempdir>/torch-spyre-ffdc`` if that root cannot be resolved.
 
     Returns:

@@ -24,8 +24,13 @@ from torch_spyre.profiler._ffdc import get_diagnostic_report
 
 
 def is_available() -> bool:
-    # more to be implemented later
-    return False
+    """Return True when the ``torch_spyre.profiler`` package is importable.
+
+    FFDC retrieval (``get_diagnostic_report``) is part of this package and
+    does not require a Kineto / ``USE_SPYRE_PROFILER`` build. Device-side
+    collection backends still land separately.
+    """
+    return True
 
 
 __all__ = ["get_diagnostic_report", "is_available"]

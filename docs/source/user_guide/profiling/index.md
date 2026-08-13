@@ -24,13 +24,13 @@ workloads running on the Spyre accelerator. The full design of the
 planned toolkit is in
 [RFC 0601 — Spyre Profiling Toolkit][rfc-0601].
 
-The in-tree `torch_spyre.profiler` package is still mostly a scaffold —
-`torch_spyre.profiler.is_available()` returns `False`. One public API is
+The in-tree `torch_spyre.profiler` package is importable —
+`torch_spyre.profiler.is_available()` returns `True`. One public API is
 already available: First Failure Data Capture (FFDC) via
-`torch.spyre.get_diagnostic_report` (see below). Broader profiling APIs
-will land with RFC 0601. Day-to-day performance work still goes through
-`torch.profiler` plus the external integrations on this page
-(`kineto-spyre`, `aiu-smi`, `aiu-trace-analyzer`).
+`torch.spyre.get_diagnostic_report` (see below). Broader device-side
+profiling APIs will land with RFC 0601. Day-to-day performance work
+still goes through `torch.profiler` plus the external integrations on
+this page (`kineto-spyre`, `aiu-smi`, `aiu-trace-analyzer`).
 
 ## What can be profiled today
 

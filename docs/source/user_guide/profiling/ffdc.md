@@ -83,9 +83,14 @@ Default directory (from Inductor `cache_dir()`, **not**
 <tempdir>/torchinductor_<user>/torch-spyre/ffdc_reports/
 ```
 
-Example on Linux: `/tmp/torchinductor_<user>/torch-spyre/ffdc_reports/`.
+`<tempdir>` is Python's `tempfile.gettempdir()`: typically `/tmp` on
+Linux. Override it with `TMPDIR` (or `TEMP`/`TMP` on some platforms).
 When `TORCHINDUCTOR_CACHE_DIR` is set, reports land under
-`$TORCHINDUCTOR_CACHE_DIR/torch-spyre/ffdc_reports/` instead.
+`$TORCHINDUCTOR_CACHE_DIR/torch-spyre/ffdc_reports/` instead — that
+env var replaces the Inductor cache root entirely.
+
+Example on Linux with no overrides:
+`/tmp/torchinductor_<user>/torch-spyre/ffdc_reports/`.
 
 If resolving that Inductor cache root fails for any reason, reports fall
 back to:
@@ -106,16 +111,29 @@ Example: `ffdc_compile_frontend_20250101T120000_123456_42.json`
 **Retention:** the directory keeps the newest **50** reports (by file
 modification time) and deletes older ones.
 
-**Selecting the right report:** `get_diagnostic_report()` walks
-candidates newest-first by the timestamp embedded in the filename (not
-`st_mtime`) **across all runs in the directory** — not scoped to the
-process that just called it — skips unreadable or structurally invalid
-files, and returns `None` when no valid report remains. If your script
-did not actually fail, this may return a leftover report from an
-earlier failure; compare `metadata.pid` or `metadata.timestamp` against
-your current run when that distinction matters. You can also identify
-a report by `metadata.host` and `failure.category` inside the JSON, or
-by the filename itself.
+(ffdc-selecting-reports)=
+
+## Selecting the newest report
+
+`get_diagnostic_report()` walks candidates newest-first by the UTC
+timestamp **embedded in the filename** (not `st_mtime`) **across all
+runs in the directory** — not scoped to the process that just called
+it — skips unreadable or structurally invalid files, and returns
+`None` when no valid report remains.
+
+If your script did not actually fail, this may return a leftover
+report from an earlier failure; compare `metadata.pid` or
+`metadata.timestamp` against your current run when that distinction
+matters. You can also identify a report by `metadata.host` and
+`failure.category` inside the JSON, or by the filename itself.
+
+Capture and retrieval can use different environment variables:
+
+- `TORCH_SPYRE_FFDC` only gates **writing**. Retrieval works even if
+  that variable is unset in a later session.
+- The **search directory** must still match. If
+  `TORCHINDUCTOR_CACHE_DIR` or `TMPDIR` changed between capture and
+  retrieval, pass the original path as `output_dir`.
 
 ## JSON report triage
 

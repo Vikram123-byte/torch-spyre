@@ -719,8 +719,7 @@ class TestFfdcAsyncCompile:
         """dxp_standalone failure must call try_collect then re-raise.
 
         Patch ``try_collect`` before reimporting ``async_compile`` so the
-        module-level binding picks up the fake (``torch_spyre.profiler`` may
-        be ``None`` on ``torch_spyre`` when profiling is unavailable).
+        module-level binding picks up the fake.
         """
         import importlib
         import subprocess
@@ -845,6 +844,7 @@ class TestFfdcProfilerApi:
         import torch_spyre
 
         assert torch_spyre.profiler is not None
+        assert torch_spyre.profiler.is_available() is True
         assert "get_diagnostic_report" in torch_spyre.profiler.__all__
         assert hasattr(torch_spyre.profiler, "get_diagnostic_report")
         assert callable(torch_spyre.profiler.get_diagnostic_report)

@@ -279,12 +279,12 @@ Profiler
 
 .. function:: torch_spyre.profiler.is_available() -> bool
 
-   Returns ``True`` when the Spyre profiler integration is built into the
-   current package and the device can be profiled. Returns ``False`` in the
-   default build today; the in-tree profiler package is a scaffold whose
-   collection backends are still landing. See
-   :doc:`../user_guide/profiling/index` for the current state and the
-   profiling tooling that is available in the meantime.
+   Returns ``True`` when the ``torch_spyre.profiler`` package is
+   importable. That includes the FFDC retrieval API
+   (``get_diagnostic_report``), which does **not** require a Kineto /
+   ``USE_SPYRE_PROFILER`` build. Device-side collection backends are
+   still landing; see :doc:`../user_guide/profiling/index` for the
+   current profiler toolkit state.
 
 FFDC (First Failure Data Capture)
 ---------------------------------
@@ -321,17 +321,27 @@ FFDC (First Failure Data Capture)
    as ``metadata.timestamp``, ``metadata.pid``, ``metadata.host``,
    ``failure.category``, ``failure.file``, and ``failure.lineno``.
 
-   Candidates are walked newest-first by the timestamp embedded in the
-   filename. Unreadable or structurally invalid files (for example corrupted
-   JSON, non-UTF-8 content, invalid filenames, or a missing string
-   ``failure.category``) are skipped, and ``None`` is returned when no valid
-   report remains.
+   "Most recent" is the largest UTC timestamp embedded in the filename
+   (``YYYYMMDDTHHMMSS_microseconds``), not ``st_mtime`` and not scoped to
+   the current process. Unreadable or structurally invalid files (for
+   example corrupted JSON, non-UTF-8 content, invalid filenames, or a
+   missing string ``failure.category``) are skipped, and ``None`` is
+   returned when no valid report remains. See
+   :ref:`ffdc-selecting-reports` for the full selection rules.
+
+   Capture is gated by ``TORCH_SPYRE_FFDC=1`` at **write** time only.
+   Retrieval does not require that variable, even if it was unset in a
+   later session. The directory **does** have to match: if
+   ``TORCHINDUCTOR_CACHE_DIR`` (or ``TMPDIR``) differs between capture
+   and retrieval, pass the original ``output_dir`` explicitly.
 
    :param output_dir: Directory to search. If ``None``, uses
        ``<Inductor cache root>/torch-spyre/ffdc_reports``, where the cache
        root is ``$TORCHINDUCTOR_CACHE_DIR`` or else
        ``<tempdir>/torchinductor_<user>`` from Inductor ``cache_dir()``
-       (not ``~/.cache/torch/inductor``). Falls back to
+       (not ``~/.cache/torch/inductor``). ``<tempdir>`` is
+       ``tempfile.gettempdir()`` — typically ``/tmp`` on Linux, or
+       ``$TMPDIR`` when that is set. Falls back to
        ``<tempdir>/torch-spyre-ffdc`` if that root cannot be resolved.
    :type output_dir: str, optional
 
@@ -340,14 +350,12 @@ FFDC (First Failure Data Capture)
       import torch
       import torch_spyre
 
-      try:
-          compiled = torch.compile(model, backend="spyre")
-          compiled(inputs)
-      except Exception:
-          report = torch.spyre.get_diagnostic_report()
-          if report is not None:
-              print(report["failure"]["category"])
-              print(report["_report_path"])
+      # After a Spyre compile / launch / unimplemented failure in this
+      # process (do not wrap arbitrary user code in a bare except):
+      report = torch.spyre.get_diagnostic_report()
+      if report is not None:
+          print(report["failure"]["category"])
+          print(report["_report_path"])
 
    The same function is also available as
    ``torch_spyre.profiler.get_diagnostic_report``. For usage workflow,
