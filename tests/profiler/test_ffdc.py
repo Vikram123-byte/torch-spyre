@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import json
+import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -42,6 +44,24 @@ _VALID_REPORT_JSON = f'{{"failure": {{"category": "{CATEGORY_UNKNOWN}"}}}}'
 _NEWEST_VALID_REPORT_NAME = "ffdc_compile_20250101T000002_000000_1.json"
 
 
+class _FrozenExc(Exception):
+    def __setattr__(self, name, value):
+        if name.startswith("_torch_spyre"):
+            raise AttributeError(name)
+        super().__setattr__(name, value)
+
+
+class _UnhashableExc(Exception):
+    def __hash__(self):
+        raise RuntimeError("hash boom")
+
+
+def _assert_one_backend_report(directory: str | Path) -> None:
+    names = sorted(p.name for p in Path(directory).glob("ffdc_*.json"))
+    assert len(names) == 1
+    assert names[0].startswith("ffdc_compile_backend_")
+
+
 def _write_ffdc_report(directory: Path, name: str, payload: str | bytes) -> Path:
     path = directory / name
     if isinstance(payload, bytes):
@@ -63,8 +83,6 @@ def _assert_get_diagnostic_report_skips_newest(
     mtime-based implementation cannot pass by accidentally selecting the valid
     file.
     """
-    import os
-
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         # Write valid first so write order alone would give it the older mtime;
@@ -125,7 +143,7 @@ class TestFfdcCollect:
             # verify the JSON file was written and is valid
             path = report.get("_report_path")
             assert path is not None
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 on_disk = json.load(f)
             assert on_disk["failure"]["category"] == report["failure"]["category"]
         return report
@@ -246,6 +264,144 @@ class TestFfdcCollect:
         # exception that call sites are about to re-raise.
         _patch_collect_raises(monkeypatch)
         try_collect(ValueError("primary"), logger=None)
+
+    def test_try_collect_keeps_inner_category_on_nested_hooks(self):
+        # Backend sdsc/dbo-opt captures then re-raises into compile_fx.
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                raise RuntimeError("dxp_standalone failed")
+            except RuntimeError as exc:
+                try_collect(
+                    exc,
+                    failure_category=CATEGORY_COMPILE_BACKEND,
+                    output_dir=tmp,
+                )
+                try_collect(
+                    exc,
+                    failure_category=CATEGORY_COMPILE_FRONTEND,
+                    output_dir=tmp,
+                )
+            _assert_one_backend_report(tmp)
+
+    def test_try_collect_skips_chained_wrapper_exception(self):
+        # KTIR path: try_collect(inner) then raise RuntimeError(...) from inner.
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                raise RuntimeError("dbo-opt failed")
+            except RuntimeError as inner:
+                try_collect(
+                    inner,
+                    failure_category=CATEGORY_COMPILE_BACKEND,
+                    output_dir=tmp,
+                )
+                try:
+                    raise RuntimeError("wrapped frontend") from inner
+                except RuntimeError as outer:
+                    try_collect(
+                        outer,
+                        failure_category=CATEGORY_COMPILE_FRONTEND,
+                        output_dir=tmp,
+                    )
+            _assert_one_backend_report(tmp)
+
+    def test_try_collect_skips_implicit_context_exception(self):
+        # ``raise New`` inside ``except`` sets __context__ without ``from``.
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                raise RuntimeError("inner backend")
+            except RuntimeError as inner:
+                try_collect(
+                    inner,
+                    failure_category=CATEGORY_COMPILE_BACKEND,
+                    output_dir=tmp,
+                )
+                try:
+                    raise RuntimeError("implicit wrap")
+                except RuntimeError as outer:
+                    try_collect(
+                        outer,
+                        failure_category=CATEGORY_COMPILE_FRONTEND,
+                        output_dir=tmp,
+                    )
+            _assert_one_backend_report(tmp)
+
+    def test_try_collect_skips_when_mark_is_on_context_not_cause(self):
+        # ``raise New from other`` inside ``except marked``: __cause__ is
+        # unmarked, __context__ is marked. Both links must be walked.
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                raise RuntimeError("marked context")
+            except RuntimeError as marked:
+                try_collect(
+                    marked,
+                    failure_category=CATEGORY_COMPILE_BACKEND,
+                    output_dir=tmp,
+                )
+                other = ValueError("unrelated cause")
+                try:
+                    raise RuntimeError("outer") from other
+                except RuntimeError as outer:
+                    try_collect(
+                        outer,
+                        failure_category=CATEGORY_COMPILE_FRONTEND,
+                        output_dir=tmp,
+                    )
+            _assert_one_backend_report(tmp)
+
+    @pytest.mark.parametrize(
+        "exc_cls",
+        [_FrozenExc, _UnhashableExc],
+        ids=["setattr_blocked", "hash_raises"],
+    )
+    def test_try_collect_survives_unmarkable_exceptions(self, exc_cls):
+        # setattr or WeakSet hashing can fail; try_collect must not raise, and
+        # the other mark path must still prevent a frontend relabel.
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                raise exc_cls("primary")
+            except exc_cls as caught:
+                try_collect(
+                    caught,
+                    failure_category=CATEGORY_COMPILE_BACKEND,
+                    output_dir=tmp,
+                )
+                try_collect(
+                    caught,
+                    failure_category=CATEGORY_COMPILE_FRONTEND,
+                    output_dir=tmp,
+                )
+            _assert_one_backend_report(tmp)
+
+    def test_try_collect_does_not_relabel_when_inner_collect_fails(self, monkeypatch):
+        import torch_spyre.profiler._ffdc as ffdc_mod
+
+        orig = ffdc_mod.collect
+        calls = {"n": 0}
+
+        def flaky(exc=None, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("ffdc write failed")
+            return orig(exc, **kwargs)
+
+        monkeypatch.setattr(ffdc_mod, "collect", flaky)
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                raise RuntimeError("dxp_standalone failed")
+            except RuntimeError as exc:
+                try_collect(
+                    exc,
+                    failure_category=CATEGORY_COMPILE_BACKEND,
+                    output_dir=tmp,
+                )
+                try_collect(
+                    exc,
+                    failure_category=CATEGORY_COMPILE_FRONTEND,
+                    output_dir=tmp,
+                )
+            names = [p.name for p in Path(tmp).glob("ffdc_*.json")]
+        assert names == []
+        assert calls["n"] == 1
 
     def test_category_constants_match_report(self):
         for category in (
@@ -379,8 +535,6 @@ class TestFfdcCollect:
     def test_get_diagnostic_report_returns_latest(self):
         # Second capture has the later embedded filename timestamp. Pin the first
         # report's st_mtime ahead so an mtime-based implementation cannot pass.
-        import os
-
         with tempfile.TemporaryDirectory() as tmp:
             try:
                 raise RuntimeError("first")
@@ -459,9 +613,85 @@ class TestFfdcCollect:
 
             assert get_diagnostic_report(output_dir=tmp) is None
 
-    def test_get_diagnostic_report_includes_report_path(self):
-        import os
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo not available")
+    def test_get_diagnostic_report_skips_fifo_newest(self):
+        # Newest candidate is a FIFO with a valid report name; must not hang.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            valid = _write_ffdc_report(d, _VALID_REPORT_NAME, _VALID_REPORT_JSON)
+            fifo = d / _NEWEST_VALID_REPORT_NAME
+            os.mkfifo(fifo)
+            assert stat.S_ISFIFO(os.lstat(fifo).st_mode)
+            result = _call_with_timeout(
+                lambda: get_diagnostic_report(output_dir=tmp), 1.0
+            )
+            assert result is not None
+            assert result["failure"]["category"] == CATEGORY_UNKNOWN
+            assert result["_report_path"] == str(valid.resolve())
 
+    def test_get_diagnostic_report_skips_deeply_nested_json_newest(self):
+        # json.load RecursionError must skip, not raise, so an older valid
+        # report is still returned.
+        _assert_get_diagnostic_report_skips_newest(
+            newest_name=_NEWEST_VALID_REPORT_NAME,
+            newest_payload="[" * 3000 + "]" * 3000,
+        )
+
+    def test_get_diagnostic_report_skips_symlink_newest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            valid = _write_ffdc_report(d, _VALID_REPORT_NAME, _VALID_REPORT_JSON)
+            target = d / "other.json"
+            target.write_text('{"failure": {"category": "compile_frontend"}}')
+            link = d / _NEWEST_VALID_REPORT_NAME
+            try:
+                os.symlink(target, link)
+            except OSError:
+                pytest.skip("symlinks not supported")
+            result = get_diagnostic_report(output_dir=tmp)
+            assert result is not None
+            assert result["_report_path"] == str(valid.resolve())
+
+    def test_get_diagnostic_report_unreadable_dir_returns_none(self):
+        if os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0):
+            pytest.skip("chmod 0 is not meaningful on this platform")
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "reports"
+            d.mkdir()
+            _write_ffdc_report(d, _VALID_REPORT_NAME, _VALID_REPORT_JSON)
+            os.chmod(d, 0)
+            try:
+                assert get_diagnostic_report(output_dir=str(d)) is None
+            finally:
+                os.chmod(d, 0o700)
+
+    def test_collect_writes_private_modes(self):
+        if os.name == "nt":
+            pytest.skip("POSIX file modes not enforced on Windows")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "ffdc"
+            collect(None, failure_category=CATEGORY_UNKNOWN, output_dir=str(out))
+            assert stat.S_IMODE(out.stat().st_mode) == 0o700
+            files = list(out.glob("ffdc_*.json"))
+            assert len(files) == 1
+            assert stat.S_IMODE(files[0].stat().st_mode) == 0o600
+            assert list(out.glob("*.tmp")) == []
+
+    def test_collect_removes_tmp_on_write_failure(self, monkeypatch):
+        import torch_spyre.profiler._ffdc as ffdc_mod
+
+        def boom(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(ffdc_mod, "_dump_json", boom)
+        with tempfile.TemporaryDirectory() as tmp:
+            report = collect(None, failure_category=CATEGORY_UNKNOWN, output_dir=tmp)
+            assert report["_report_path"] is None
+            assert report["collector"]["success"] is False
+            assert list(Path(tmp).glob("ffdc_*.json")) == []
+            assert list(Path(tmp).glob("*.tmp")) == []
+
+    def test_get_diagnostic_report_includes_report_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             reports_dir = Path(tmp) / "reports"
             reports_dir.mkdir()
@@ -509,8 +739,6 @@ class TestFfdcCollect:
         # or the full name. Pin unknown st_mtime ahead of compile so an
         # mtime-based implementation cannot pass; compile must still win via its
         # later embedded timestamp, and must not lose to a full-name lexical sort.
-        import os
-
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
             compile_path = _write_ffdc_report(
@@ -534,8 +762,6 @@ class TestFfdcCollect:
         # _prune_old_reports keeps the newest `keep` files by mtime, not by name.
         # compile sorts first lexically, so use compile as the NEWEST category —
         # a name-sort regression would evict these and wrongly keep the older files.
-        import os
-
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
             # oldest → newest by mtime (index = mtime in seconds since epoch)
@@ -560,6 +786,21 @@ class TestFfdcCollect:
                 "ffdc_compile_20250101T000003_000000_1.json",
                 "ffdc_compile_20250101T000004_000000_1.json",
             ]
+
+    def test_collect_succeeds_when_dir_has_dangling_ffdc_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            dangling = d / "ffdc_unknown_20990101T000000_000000_1.json"
+            try:
+                dangling.symlink_to(d / "missing.json")
+            except OSError:
+                pytest.skip("symlinks not supported")
+            report = collect(None, failure_category=CATEGORY_UNKNOWN, output_dir=tmp)
+            assert report["_report_path"] is not None
+            assert report["collector"]["success"] is True
+            written = Path(report["_report_path"])
+            assert written.is_file()
+            assert dangling.is_symlink()
 
     def test_collect_prunes_beyond_max_reports(self):
         # After writing, collect() must not leave more than _MAX_REPORTS files.
@@ -844,7 +1085,7 @@ class TestFfdcProfilerApi:
         import torch_spyre
 
         assert torch_spyre.profiler is not None
-        assert torch_spyre.profiler.is_available() is True
+        assert not hasattr(torch_spyre.profiler, "is_available")
         assert "get_diagnostic_report" in torch_spyre.profiler.__all__
         assert hasattr(torch_spyre.profiler, "get_diagnostic_report")
         assert callable(torch_spyre.profiler.get_diagnostic_report)

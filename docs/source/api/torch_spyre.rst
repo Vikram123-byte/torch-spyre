@@ -277,14 +277,13 @@ A worked example is in :doc:`../user_guide/profiling/index`.
 Profiler
 --------
 
-.. function:: torch_spyre.profiler.is_available() -> bool
+Device presence is ``torch.spyre.is_available()``. Device-side timing uses
+upstream ``torch.profiler`` (see :doc:`../user_guide/profiling/index`).
+``torch_spyre.profiler`` exports FFDC retrieval only:
 
-   Returns ``True`` when the ``torch_spyre.profiler`` package is
-   importable. That includes the FFDC retrieval API
-   (``get_diagnostic_report``), which does **not** require a Kineto /
-   ``USE_SPYRE_PROFILER`` build. Device-side collection backends are
-   still landing; see :doc:`../user_guide/profiling/index` for the
-   current profiler toolkit state.
+.. function:: torch_spyre.profiler.get_diagnostic_report(output_dir=None) -> dict | None
+
+   Same function as ``torch.spyre.get_diagnostic_report`` below.
 
 FFDC (First Failure Data Capture)
 ---------------------------------
@@ -324,9 +323,9 @@ FFDC (First Failure Data Capture)
    "Most recent" is the largest UTC timestamp embedded in the filename
    (``YYYYMMDDTHHMMSS_microseconds``), not ``st_mtime`` and not scoped to
    the current process. Unreadable or structurally invalid files (for
-   example corrupted JSON, non-UTF-8 content, invalid filenames, or a
-   missing string ``failure.category``) are skipped, and ``None`` is
-   returned when no valid report remains. See
+   example corrupted JSON, non-UTF-8 content, invalid filenames, a
+   missing string ``failure.category``, FIFOs, or symlinks) are skipped,
+   and ``None`` is returned when no valid report remains. See
    :ref:`ffdc-selecting-reports` for the full selection rules.
 
    Capture is gated by ``TORCH_SPYRE_FFDC=1`` at **write** time only.

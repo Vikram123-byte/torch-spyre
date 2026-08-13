@@ -30,20 +30,24 @@ Usage:
 import functools
 import itertools
 import json
+import logging
 import os
+import platform
+import stat
 import sys
 import tempfile
 import threading
 import time
 import traceback
-import platform
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, TypeVar
+from weakref import WeakSet
 
 
 T = TypeVar("T")
 
+_log = logging.getLogger(__name__)
 _FutureTimeoutError = TimeoutError
 
 
@@ -114,13 +118,85 @@ def _prune_old_reports(out_dir: Path, keep: int) -> None:
     later-sorting category to be evicted before older ones of an earlier-sorting
     category.
     """
-    reports = sorted(
-        out_dir.glob("ffdc_*.json"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    for old in reports[keep:]:
-        old.unlink(missing_ok=True)
+    try:
+        paths = list(out_dir.glob("ffdc_*.json"))
+    except OSError:
+        return
+    dated: list[tuple[float, Path]] = []
+    for path in paths:
+        try:
+            st = os.lstat(path)
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            dated.append((st.st_mtime, path))
+        except OSError:
+            continue
+    dated.sort(key=lambda item: item[0], reverse=True)
+    for _, old in dated[keep:]:
+        try:
+            old.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _restrict_owner_only(path: Path, mode: int) -> None:
+    """Apply POSIX owner-only mode. No-op on Windows (DACLs are unchanged)."""
+    if os.name == "nt":
+        return
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def _dump_json(handle: Any, report: dict) -> None:
+    """Serialize ``report`` and flush it to durable storage."""
+    json.dump(report, handle, indent=2, default=str)
+    handle.flush()
+    os.fsync(handle.fileno())
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Best-effort fsync of a directory so the rename is durable."""
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
+def _publish_json(report_path: Path, report: dict) -> None:
+    """Atomically write ``report`` as UTF-8 JSON with POSIX mode ``0o600``.
+
+    Owner-only permissions are POSIX-only. On Windows this still writes the
+    file, but inherited DACLs are left unchanged. Data is flushed and fsynced
+    before ``os.replace`` so a host crash cannot leave a truncated newest
+    report.
+    """
+    tmp_path = report_path.with_name(report_path.name + ".tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    fd = -1
+    try:
+        fd = os.open(tmp_path, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            _dump_json(handle, report)
+        os.replace(tmp_path, report_path)
+        _restrict_owner_only(report_path, 0o600)
+        _fsync_dir(report_path.parent)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 def _default_output_dir() -> Path:
@@ -128,8 +204,10 @@ def _default_output_dir() -> Path:
 
     Prefers the Torch Inductor cache dir (respects ``TORCHINDUCTOR_CACHE_DIR``,
     else ``<tempdir>/torchinductor_<user>`` via Inductor's ``cache_dir()``) so
-    reports land alongside other Inductor artifacts. Falls back to
-    ``<tempdir>/torch-spyre-ffdc`` when that cache root is unavailable.
+    reports land alongside other Inductor artifacts. ``<tempdir>`` is
+    ``tempfile.gettempdir()`` (typically ``/tmp`` on Linux, or ``$TMPDIR``).
+    Falls back to ``<tempdir>/torch-spyre-ffdc`` when that cache root is
+    unavailable.
     """
     try:
         from torch._inductor.runtime.runtime_utils import cache_dir as _cache_dir
@@ -329,8 +407,12 @@ def collect(
         output_dir: Directory to write report JSON. Defaults to
             ``<Inductor cache root>/torch-spyre/ffdc_reports``, where the
             cache root is ``$TORCHINDUCTOR_CACHE_DIR`` or else
-            ``<tempdir>/torchinductor_<user>``. Falls back to
+            ``<tempdir>/torchinductor_<user>`` (``<tempdir>`` is
+            ``tempfile.gettempdir()``, typically ``/tmp`` on Linux,
+            overridable via ``TMPDIR``). Falls back to
             ``<tempdir>/torch-spyre-ffdc`` if that root cannot be resolved.
+            Owner-only modes (``0o700`` / ``0o600``) are POSIX-only; on
+            Windows, inherited DACLs are left unchanged.
 
     Returns:
         dict with the full FFDC report.
@@ -481,14 +563,14 @@ def collect(
     # --- write report ---
     try:
         out_dir = Path(output_dir) if output_dir else _default_output_dir()
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _restrict_owner_only(out_dir, 0o700)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%f")
         safe_category = "".join(
             c if _is_safe_category_char(c) else "_" for c in failure_category
         )[:32]
         report_path = out_dir / f"ffdc_{safe_category}_{ts}_{os.getpid()}.json"
-        with open(report_path, "w") as f:
-            json.dump(report, f, indent=2, default=str)
+        _publish_json(report_path, report)
         report["_report_path"] = str(report_path.resolve())
         _prune_old_reports(out_dir, keep=_MAX_REPORTS)
     except Exception as e:
@@ -499,6 +581,48 @@ def collect(
     return report
 
 
+_FFDC_CAPTURED_ATTR = "_torch_spyre_ffdc_captured"
+_captured_exceptions: WeakSet[BaseException] = WeakSet()
+
+
+def _ffdc_already_captured(exc: Optional[BaseException]) -> bool:
+    """True if ``exc`` or any ``__cause__`` / ``__context__`` was already hooked."""
+    seen: set[int] = set()
+    stack: list[BaseException] = []
+    if exc is not None:
+        stack.append(exc)
+    while stack:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        if getattr(cur, _FFDC_CAPTURED_ATTR, False):
+            return True
+        try:
+            if cur in _captured_exceptions:
+                return True
+        except Exception:
+            pass
+        if cur.__cause__ is not None:
+            stack.append(cur.__cause__)
+        if cur.__context__ is not None:
+            stack.append(cur.__context__)
+    return False
+
+
+def _mark_ffdc_captured(exc: Optional[BaseException]) -> None:
+    if exc is None:
+        return
+    try:
+        setattr(exc, _FFDC_CAPTURED_ATTR, True)
+    except Exception:
+        pass
+    try:
+        _captured_exceptions.add(exc)
+    except Exception:
+        pass
+
+
 def try_collect(
     exc: Optional[BaseException] = None,
     *,
@@ -507,10 +631,19 @@ def try_collect(
 ) -> None:
     """Best-effort ``collect`` for failure hooks; never raises.
 
-    Call sites catch a primary failure, call this, then re-raise. Collection
-    errors must not replace that original exception. Import of this module is
-    not guarded here — a broken ``_ffdc`` import is a real bug.
+    Call sites catch a primary failure, call this, then re-raise.
+    Collection errors are swallowed here so they cannot replace that
+    original exception.
+
+    Nested hooks (backend ``sdsc``/``dbo-opt`` inside ``compile_fx``) must
+    not rewrite an inner report as ``compile_frontend``. If this exception or
+    its ``__cause__`` / ``__context__`` chain was already captured, skip.
+    The inner hook is marked even when ``collect`` fails so a later outer
+    hook cannot relabel the same failure.
     """
+    if _ffdc_already_captured(exc):
+        return
+    _mark_ffdc_captured(exc)
     try:
         collect(exc, **kwargs)
     except Exception:
@@ -551,6 +684,39 @@ def with_ffdc(
     return decorator
 
 
+def _read_regular_json(report_path: Path) -> Optional[Any]:
+    """Load JSON from a regular file; skip FIFOs, devices, and symlinks.
+
+    Parser failures (including ``RecursionError`` on deeply nested JSON)
+    return ``None`` so a newer bomb cannot hide an older valid report.
+    """
+    try:
+        if not stat.S_ISREG(os.lstat(report_path).st_mode):
+            return None
+    except OSError:
+        return None
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = -1
+    try:
+        fd = os.open(report_path, flags)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            return json.load(handle)
+    except Exception:
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def get_diagnostic_report(
     output_dir: Optional[str] = None,
 ) -> Optional[dict]:
@@ -569,13 +735,18 @@ def get_diagnostic_report(
     Returns:
         Parsed JSON dict of the most recent valid report, or None. The
         returned dict includes ``_report_path`` with the absolute path of the
-        loaded file. Corrupted, non-UTF-8, unreadable, invalidly named, or
-        structurally invalid report files (for example missing a string
-        ``failure.category``) are skipped. Returns None when no valid report
-        remains.
+        loaded file. Corrupted, non-UTF-8, unreadable, invalidly named,
+        non-regular (FIFO/symlink), or structurally invalid report files
+        (for example missing a string ``failure.category``) are skipped.
+        Returns None when no valid report remains.
     """
     search_dir = Path(output_dir) if output_dir else _default_output_dir()
-    if not search_dir.exists():
+    try:
+        if not search_dir.is_dir():
+            return None
+        listed = list(search_dir.glob("ffdc_*.json"))
+    except OSError:
+        _log.debug("FFDC report directory unreadable: %s", search_dir, exc_info=True)
         return None
 
     # Sort by the timestamp embedded in the filename, not by the full filename.
@@ -588,7 +759,7 @@ def get_diagnostic_report(
     # (e.g. runtime_launch).  Valid names split into:
     # [ffdc_{category}, YYYYMMDDTHHMMSS, microseconds, pid].
     candidates = []
-    for report_path in search_dir.glob("ffdc_*.json"):
+    for report_path in listed:
         sort_key = _report_sort_key(report_path)
         if sort_key is not None:
             candidates.append((sort_key, report_path))
@@ -598,11 +769,7 @@ def get_diagnostic_report(
         reverse=True,
     )
     for _, report_path in reports:
-        try:
-            with open(report_path, encoding="utf-8") as f:
-                report = json.load(f)
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-            continue
+        report = _read_regular_json(report_path)
         if not isinstance(report, dict):
             continue
         failure = report.get("failure")
@@ -610,6 +777,9 @@ def get_diagnostic_report(
             failure.get("category"), str
         ):
             continue
-        report["_report_path"] = str(report_path.resolve())
+        try:
+            report["_report_path"] = str(report_path.resolve())
+        except OSError:
+            report["_report_path"] = str(report_path)
         return report
     return None

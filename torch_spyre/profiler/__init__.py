@@ -15,22 +15,12 @@
 """
 Spyre profiling package.
 
-This package provides the Python-side scaffolding for Spyre profiling
-integration and FFDC diagnostic report retrieval. The primary public API is
-``torch.spyre.get_diagnostic_report`` (see ``make_spyre_module``).
+FFDC retrieval is the public API on this package
+(``get_diagnostic_report``, also bound as ``torch.spyre.get_diagnostic_report``).
+Device-side timing uses upstream ``torch.profiler``. Device presence is
+``torch.spyre.is_available()``, not a flag on this package.
 """
 
 from torch_spyre.profiler._ffdc import get_diagnostic_report
 
-
-def is_available() -> bool:
-    """Return True when the ``torch_spyre.profiler`` package is importable.
-
-    FFDC retrieval (``get_diagnostic_report``) is part of this package and
-    does not require a Kineto / ``USE_SPYRE_PROFILER`` build. Device-side
-    collection backends still land separately.
-    """
-    return True
-
-
-__all__ = ["get_diagnostic_report", "is_available"]
+__all__ = ["get_diagnostic_report"]

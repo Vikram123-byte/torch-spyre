@@ -71,6 +71,13 @@ paths to link into the report.
 FFDC never changes program behaviour: hooks use nested `try/except` so
 a collection failure cannot mask the original exception.
 
+When a backend hook (`sdsc` / `dbo-opt`) captures and re-raises, the
+outer `compile_fx` wrapper does **not** write a second
+`compile_frontend` report for that same exception, a wrapper raised
+`from` it (`__cause__`), or a wrapper whose `__context__` is that
+exception (bare `raise New` inside `except`). The inner category is
+kept.
+
 The same function is available as
 `torch_spyre.profiler.get_diagnostic_report`.
 
@@ -99,6 +106,12 @@ back to:
 <tempdir>/torch-spyre-ffdc/
 ```
 
+The directory is created with mode `0o700` and each report file with
+`0o600` on POSIX so captured env, host, paths, and tracebacks are not
+world-readable. Owner-only modes are POSIX-only: on Windows,
+`os.chmod` does not change DACLs, so reports inherit the destination
+directory's ACL and this privacy restriction is not applied.
+
 Each successful capture writes a **new** file; earlier reports are not
 overwritten. Filenames follow:
 
@@ -118,8 +131,10 @@ modification time) and deletes older ones.
 `get_diagnostic_report()` walks candidates newest-first by the UTC
 timestamp **embedded in the filename** (not `st_mtime`) **across all
 runs in the directory** — not scoped to the process that just called
-it — skips unreadable or structurally invalid files, and returns
-`None` when no valid report remains.
+it — skips unreadable or structurally invalid files (including FIFOs
+and symlinks whose names look like reports), and returns `None` when
+no valid report remains. An unreadable search directory returns
+`None` rather than raising.
 
 If your script did not actually fail, this may return a leftover
 report from an earlier failure; compare `metadata.pid` or
