@@ -28,9 +28,12 @@ from torch_spyre.profiler._ffdc import (
     CATEGORY_RUNTIME_LAUNCH,
     CATEGORY_UNIMPLEMENTED,
     CATEGORY_UNKNOWN,
+    HOOK_FAILURE_CATEGORIES,
+    KNOWN_FAILURE_CATEGORIES,
     _call_with_timeout,
     _default_output_dir,
     _MAX_REPORTS,
+    _normalize_failure_category,
     _prune_old_reports,
     _report_sort_key,
     REQUIRED_FIELDS,
@@ -416,6 +419,126 @@ class TestFfdcCollect:
             except ValueError as exc:
                 report = self._collect_to_tmpdir(exc, failure_category=category)
             assert report["failure"]["category"] == category
+
+    def test_known_and_hook_failure_category_sets(self):
+        assert HOOK_FAILURE_CATEGORIES == frozenset(
+            {
+                CATEGORY_COMPILE_FRONTEND,
+                CATEGORY_COMPILE_BACKEND,
+                CATEGORY_RUNTIME_LAUNCH,
+                CATEGORY_UNIMPLEMENTED,
+            }
+        )
+        assert KNOWN_FAILURE_CATEGORIES == frozenset(
+            {*HOOK_FAILURE_CATEGORIES, CATEGORY_UNKNOWN}
+        )
+        assert CATEGORY_UNKNOWN not in HOOK_FAILURE_CATEGORIES
+        for category in KNOWN_FAILURE_CATEGORIES:
+            assert _normalize_failure_category(category) == category
+
+    def test_normalize_failure_category_empty_to_unknown(self):
+        assert _normalize_failure_category("") == CATEGORY_UNKNOWN
+        assert _normalize_failure_category(None) == CATEGORY_UNKNOWN
+
+    def test_normalize_failure_category_passthrough_nonempty(self):
+        # Custom labels stay in the JSON body; retrieval only requires a str.
+        assert _normalize_failure_category("custom_label") == "custom_label"
+
+    def test_collect_custom_category_round_trips_via_retrieval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = collect(
+                RuntimeError("custom path"),
+                failure_category="custom_label",
+                output_dir=tmp,
+            )
+            assert report["failure"]["category"] == "custom_label"
+            assert Path(report["_report_path"]).name.startswith("ffdc_custom_label_")
+            result = get_diagnostic_report(output_dir=tmp)
+        assert result is not None
+        assert result["failure"]["category"] == "custom_label"
+
+    def test_hooks_emit_only_hook_failure_categories(self):
+        """Auto-hook sites must pass only HOOK_FAILURE_CATEGORIES values."""
+        import ast
+
+        import torch_spyre
+
+        # CI removes the checked-out torch_spyre/ source tree after installing
+        # the wheel so the package cannot shadow site-packages. Scan the
+        # importable package location instead of Path(__file__)/../torch_spyre.
+        package_root = Path(torch_spyre.__file__).resolve().parent
+        name_to_value = {
+            "CATEGORY_COMPILE_FRONTEND": CATEGORY_COMPILE_FRONTEND,
+            "CATEGORY_COMPILE_BACKEND": CATEGORY_COMPILE_BACKEND,
+            "CATEGORY_RUNTIME_LAUNCH": CATEGORY_RUNTIME_LAUNCH,
+            "CATEGORY_UNIMPLEMENTED": CATEGORY_UNIMPLEMENTED,
+            "CATEGORY_UNKNOWN": CATEGORY_UNKNOWN,
+        }
+        emitted: set[str] = set()
+
+        for path in sorted(package_root.rglob("*.py")):
+            if path.name == "_ffdc.py":
+                continue
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if isinstance(func, ast.Name):
+                    fname = func.id
+                elif isinstance(func, ast.Attribute):
+                    fname = func.attr
+                else:
+                    continue
+                if fname == "try_collect":
+                    for kw in node.keywords:
+                        if kw.arg != "failure_category":
+                            continue
+                        assert isinstance(kw.value, ast.Name), (
+                            f"{path}:{node.lineno}: failure_category must use "
+                            f"CATEGORY_* constant, got {ast.dump(kw.value)}"
+                        )
+                        assert kw.value.id in name_to_value, (
+                            f"{path}:{node.lineno}: unknown category name {kw.value.id}"
+                        )
+                        emitted.add(name_to_value[kw.value.id])
+                elif fname == "with_ffdc":
+                    assert node.args, f"{path}:{node.lineno}: with_ffdc missing args"
+                    cat_node = node.args[0]
+                    assert isinstance(cat_node, ast.Name), (
+                        f"{path}:{node.lineno}: with_ffdc category must use "
+                        f"CATEGORY_* constant, got {ast.dump(cat_node)}"
+                    )
+                    assert cat_node.id in name_to_value, (
+                        f"{path}:{node.lineno}: unknown category name {cat_node.id}"
+                    )
+                    emitted.add(name_to_value[cat_node.id])
+
+        assert emitted == HOOK_FAILURE_CATEGORIES, (
+            f"hook inventory from {package_root} was {emitted!r}, "
+            f"expected {HOOK_FAILURE_CATEGORIES!r}"
+        )
+        assert CATEGORY_UNKNOWN not in emitted
+
+    def test_ffdc_docs_list_known_failure_categories(self):
+        docs = (
+            Path(__file__).resolve().parents[2]
+            / "docs"
+            / "source"
+            / "user_guide"
+            / "profiling"
+            / "ffdc.md"
+        )
+        text = docs.read_text()
+        for category in sorted(KNOWN_FAILURE_CATEGORIES):
+            assert f"`{category}`" in text
+        assert "KNOWN_FAILURE_CATEGORIES" in text
+        assert "HOOK_FAILURE_CATEGORIES" in text
+        assert "Hook-emitted labels" in text
+        assert "Field / support enumeration" in text
+        assert "Deferred category gaps" in text
+        assert "no auto-hook" in text
+        assert "runtime.kernel_name" in text
 
     def test_report_filename_contains_category(self):
         try:
