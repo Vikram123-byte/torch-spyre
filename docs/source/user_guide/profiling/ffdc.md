@@ -64,34 +64,27 @@ FFDC uses a preferred vocabulary for `failure.category`. The maintainer
 source of truth is `KNOWN_FAILURE_CATEGORIES` in
 `torch_spyre/profiler/_ffdc.py` (import from that module; it is not
 re-exported on `torch_spyre.profiler`). The auto-hook subset is
-`HOOK_FAILURE_CATEGORIES` in the same file.
-
-**Hook-emitted labels** (auto-capture sites today):
-
-- `compile_frontend`
-- `compile_backend`
-- `runtime_launch`
-- `unimplemented`
-
-**Capture-time labels** (not written by auto-hooks):
-
-- `unknown` — default for manual `collect()` / `try_collect()`, and the
-  value empty category input normalizes to `unknown`
+`HOOK_FAILURE_CATEGORIES` in the same file (hook-emitted labels today;
+`unknown` is capture-time only — default when `collect()` /
+`try_collect()` omit `failure_category`, and the value empty /
+whitespace-only category input normalizes to `unknown`). The table
+below is the short index; per-category triage notes follow in Field /
+support enumeration.
 
 | `failure.category` | Layer | When it fires | Hook location |
 |---|---|---|---|
 | `compile_frontend` | Frontend | `torch.compile()` / Spyre Inductor frontend fails (including decomposition and lowering paths that surface through `compile_fx`) | `torch_spyre/_inductor/__init__.py` |
-| `compile_backend` | Backend | `dxp_standalone` / bundle compilation fails while generating op-spec / MLIR artifacts | `torch_spyre/execution/async_compile.py` |
+| `compile_backend` | Backend | `dxp_standalone` / `dbo-opt` bundle or KTIR compilation fails while generating op-spec / MLIR artifacts | `torch_spyre/execution/async_compile.py` |
 | `runtime_launch` | Runtime | Kernel launch or `launch_jobplan` fails on device | `torch_spyre/execution/kernel_runner.py` (`SpyreSDSCKernelRunner`) |
 | `unimplemented` | Runtime | An op reaches the runtime without a Spyre lowering | `torch_spyre/execution/kernel_runner.py` (`SpyreUnimplementedRunner`) |
-| `unknown` | — | Manual `collect()` / empty category normalized at capture time | `torch_spyre/profiler/_ffdc.py` (no auto-hook) |
+| `unknown` | — | Manual `collect()` / empty or whitespace-only category normalized at capture time | `torch_spyre/profiler/_ffdc.py` (no auto-hook) |
 
-`collect()` does **not** reject non-vocabulary strings: empty input
-becomes `unknown`; other non-empty strings are stored as-is in the JSON
-body (filename characters outside `[A-Za-z0-9_-]` are sanitized for the
-on-disk name only). `get_diagnostic_report()` accepts any report whose
-`failure.category` is a string — it does not restrict to
-`KNOWN_FAILURE_CATEGORIES`.
+`collect()` does **not** reject non-vocabulary strings: empty /
+whitespace-only input becomes `unknown`; other non-empty strings are
+stripped and stored in the JSON body (filename characters outside
+`[A-Za-z0-9_-]` are sanitized for the on-disk name only).
+`get_diagnostic_report()` accepts any report whose `failure.category`
+is a string — it does not restrict to `KNOWN_FAILURE_CATEGORIES`.
 
 FFDC never changes program behaviour: hooks use nested `try/except` so
 a collection failure cannot mask the original exception.
@@ -129,16 +122,17 @@ that category.
 
 #### `compile_backend`
 
-- **Trigger path:** `dxp_standalone` / bundle compile via
+- **Trigger path:** `dxp_standalone` / `dbo-opt` bundle or KTIR compile via
   `try_collect(..., failure_category=CATEGORY_COMPILE_BACKEND)` in
   `torch_spyre/execution/async_compile.py` (`sdsc` / `dbo-opt` paths).
-- **Owning hook:** backend compile; typically passes `runtime.kernel_name`
-  and `runtime.code_dir`.
+- **Owning hook:** backend compile; passes `runtime.kernel_name` and
+  `runtime.code_dir`.
 - **Triage first:** `failure.*`; `runtime.kernel_name` /
   `runtime.code_dir`; then `artifacts.paths` (`sdsc_*.json`, `*.mlir`)
-  and compile env flags.
+  and `environment.TORCH_COMPILE_DEBUG` / `DUMP_SPYRE_CODE`.
 - **Interpretation:** frontend succeeded far enough to attempt bundle /
-  DeepTools compilation. Prefer kernel / MLIR artifacts over FX graphs.
+  KTIR (`dxp_standalone` / `dbo-opt`) compilation. Prefer kernel / MLIR
+  artifacts over FX graphs.
 
 #### `runtime_launch`
 
@@ -166,9 +160,9 @@ that category.
 
 #### `unknown`
 
-- **Trigger path:** manual `collect()` / `try_collect()` without a
-  category, or empty category input normalized in
-  `_normalize_failure_category`.
+- **Trigger path:** manual `collect()` / `try_collect()` that omit
+  `failure_category`, or empty / whitespace-only category input
+  normalized in `_normalize_failure_category`.
 - **Owning code:** `torch_spyre/profiler/_ffdc.py` (no auto-hook emits
   this on its own).
 - **Triage first:** `failure.*` and `collector.*`; treat other sections as
@@ -186,9 +180,6 @@ missing vocabulary entries):
 - Profiling / capture-pipeline failure category
 - Finer per-pass frontend categories (decomposition / lowering still share
   `compile_frontend` when they surface through `compile_fx`)
-
-Frontend vs backend compile are already separate labels
-(`compile_frontend` / `compile_backend`).
 
 ## Where reports are stored
 

@@ -65,6 +65,8 @@ CATEGORY_UNIMPLEMENTED = "unimplemented"
 CATEGORY_UNKNOWN = "unknown"
 
 # Labels auto-hooks write today (excludes CATEGORY_UNKNOWN).
+# Preferred vocabulary for docs/hooks only — collect() does not enforce
+# membership; non-empty custom labels still pass through after strip.
 HOOK_FAILURE_CATEGORIES = frozenset(
     {
         CATEGORY_COMPILE_FRONTEND,
@@ -75,6 +77,7 @@ HOOK_FAILURE_CATEGORIES = frozenset(
 )
 
 # Preferred vocabulary for reports: hook labels plus capture-time unknown.
+# Not a runtime allowlist; see HOOK_FAILURE_CATEGORIES note above.
 KNOWN_FAILURE_CATEGORIES = frozenset({*HOOK_FAILURE_CATEGORIES, CATEGORY_UNKNOWN})
 
 # Fields required to consider a report "complete"
@@ -243,16 +246,20 @@ def _is_safe_category_char(c: str) -> bool:
 def _normalize_failure_category(failure_category: Optional[str]) -> str:
     """Normalize a capture-time category string for ``failure.category``.
 
-    Empty / missing values become ``CATEGORY_UNKNOWN``. Other strings are
-    passed through so intentional custom values remain readable in the JSON
-    body; filename safety is handled separately via ``_is_safe_category_char``.
-    Retrieval only requires ``failure.category`` to be a string — it does not
-    restrict to ``KNOWN_FAILURE_CATEGORIES``. Prefer hook / manual callers pass
-    a value from ``KNOWN_FAILURE_CATEGORIES``.
+    Empty / missing / whitespace-only values become ``CATEGORY_UNKNOWN``.
+    Other strings are stripped and stored in ``failure.category`` so
+    intentional custom values remain readable in the JSON body; filename
+    safety is handled separately via ``_is_safe_category_char``. Retrieval
+    only requires ``failure.category`` to be a string — it does not
+    restrict to ``KNOWN_FAILURE_CATEGORIES``. Prefer hook / manual callers
+    pass a value from ``KNOWN_FAILURE_CATEGORIES``.
     """
-    if not failure_category:
+    if failure_category is None:
         return CATEGORY_UNKNOWN
-    return failure_category
+    stripped = failure_category.strip()
+    if not stripped:
+        return CATEGORY_UNKNOWN
+    return stripped
 
 
 def _report_sort_key(report_path: Path) -> Optional[str]:
@@ -435,8 +442,9 @@ def collect(
         exc: The exception that triggered FFDC (or None for manual call).
         failure_category: Prefer a value from ``KNOWN_FAILURE_CATEGORIES``
             (``compile_frontend``, ``compile_backend``, ``runtime_launch``,
-            ``unimplemented``, ``unknown``). Empty / missing values normalize
-            to ``unknown``; other non-empty strings are stored as-is in
+            ``unimplemented``, ``unknown``). Empty / missing /
+            whitespace-only values normalize to ``unknown``; other
+            non-empty strings are stripped and stored in
             ``failure.category``. Auto-hooks emit only values in
             ``HOOK_FAILURE_CATEGORIES``.
         kernel_name: Kernel name from SpyreSDSCKernelRunner if available.

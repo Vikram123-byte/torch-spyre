@@ -439,10 +439,13 @@ class TestFfdcCollect:
     def test_normalize_failure_category_empty_to_unknown(self):
         assert _normalize_failure_category("") == CATEGORY_UNKNOWN
         assert _normalize_failure_category(None) == CATEGORY_UNKNOWN
+        assert _normalize_failure_category("   ") == CATEGORY_UNKNOWN
+        assert _normalize_failure_category("\t\n") == CATEGORY_UNKNOWN
 
     def test_normalize_failure_category_passthrough_nonempty(self):
         # Custom labels stay in the JSON body; retrieval only requires a str.
         assert _normalize_failure_category("custom_label") == "custom_label"
+        assert _normalize_failure_category("  custom_label  ") == "custom_label"
 
     def test_collect_custom_category_round_trips_via_retrieval(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -467,14 +470,46 @@ class TestFfdcCollect:
         # the wheel so the package cannot shadow site-packages. Scan the
         # importable package location instead of Path(__file__)/../torch_spyre.
         package_root = Path(torch_spyre.__file__).resolve().parent
+        # Only hook labels — CATEGORY_UNKNOWN must not appear at auto-hook sites.
         name_to_value = {
             "CATEGORY_COMPILE_FRONTEND": CATEGORY_COMPILE_FRONTEND,
             "CATEGORY_COMPILE_BACKEND": CATEGORY_COMPILE_BACKEND,
             "CATEGORY_RUNTIME_LAUNCH": CATEGORY_RUNTIME_LAUNCH,
             "CATEGORY_UNIMPLEMENTED": CATEGORY_UNIMPLEMENTED,
-            "CATEGORY_UNKNOWN": CATEGORY_UNKNOWN,
         }
         emitted: set[str] = set()
+
+        def _hook_category_name(
+            call: ast.Call, *, path: Path, require_keyword: bool
+        ) -> str:
+            cat_kw = next(
+                (kw for kw in call.keywords if kw.arg == "failure_category"),
+                None,
+            )
+            if cat_kw is not None:
+                cat_node = cat_kw.value
+            elif require_keyword:
+                raise AssertionError(
+                    f"{path}:{call.lineno}: try_collect must pass "
+                    f"failure_category=CATEGORY_* (default would be "
+                    f"CATEGORY_UNKNOWN)"
+                )
+            elif call.args:
+                cat_node = call.args[0]
+            else:
+                raise AssertionError(
+                    f"{path}:{call.lineno}: with_ffdc must pass a CATEGORY_* "
+                    f"positional arg or failure_category= keyword"
+                )
+            assert isinstance(cat_node, ast.Name), (
+                f"{path}:{call.lineno}: failure_category must use "
+                f"CATEGORY_* constant, got {ast.dump(cat_node)}"
+            )
+            assert cat_node.id in name_to_value, (
+                f"{path}:{call.lineno}: hook category must be a "
+                f"HOOK_FAILURE_CATEGORIES name, got {cat_node.id}"
+            )
+            return name_to_value[cat_node.id]
 
         for path in sorted(package_root.rglob("*.py")):
             if path.name == "_ffdc.py":
@@ -491,34 +526,13 @@ class TestFfdcCollect:
                 else:
                     continue
                 if fname == "try_collect":
-                    cat_kw = next(
-                        (kw for kw in node.keywords if kw.arg == "failure_category"),
-                        None,
+                    emitted.add(
+                        _hook_category_name(node, path=path, require_keyword=True)
                     )
-                    assert cat_kw is not None, (
-                        f"{path}:{node.lineno}: try_collect must pass "
-                        f"failure_category=CATEGORY_* (default would be "
-                        f"CATEGORY_UNKNOWN)"
-                    )
-                    assert isinstance(cat_kw.value, ast.Name), (
-                        f"{path}:{node.lineno}: failure_category must use "
-                        f"CATEGORY_* constant, got {ast.dump(cat_kw.value)}"
-                    )
-                    assert cat_kw.value.id in name_to_value, (
-                        f"{path}:{node.lineno}: unknown category name {cat_kw.value.id}"
-                    )
-                    emitted.add(name_to_value[cat_kw.value.id])
                 elif fname == "with_ffdc":
-                    assert node.args, f"{path}:{node.lineno}: with_ffdc missing args"
-                    cat_node = node.args[0]
-                    assert isinstance(cat_node, ast.Name), (
-                        f"{path}:{node.lineno}: with_ffdc category must use "
-                        f"CATEGORY_* constant, got {ast.dump(cat_node)}"
+                    emitted.add(
+                        _hook_category_name(node, path=path, require_keyword=False)
                     )
-                    assert cat_node.id in name_to_value, (
-                        f"{path}:{node.lineno}: unknown category name {cat_node.id}"
-                    )
-                    emitted.add(name_to_value[cat_node.id])
 
         assert emitted == HOOK_FAILURE_CATEGORIES, (
             f"hook inventory from {package_root} was {emitted!r}, "
@@ -540,13 +554,16 @@ class TestFfdcCollect:
             assert f"`{category}`" in text
         assert "KNOWN_FAILURE_CATEGORIES" in text
         assert "HOOK_FAILURE_CATEGORIES" in text
-        assert "Hook-emitted labels" in text
+        assert "hook-emitted labels" in text
         assert "Field / support enumeration" in text
         assert "Deferred category gaps" in text
         assert "no auto-hook" in text
         assert "runtime.kernel_name" in text
         assert "fx_graph_readable.py" in text
-        # Docs claim these are not re-exported on torch_spyre.profiler.
+        assert "dbo-opt" in text
+        assert "KTIR" in text
+
+    def test_category_sets_not_reexported_on_profiler(self):
         import torch_spyre.profiler as profiler_mod
 
         assert not hasattr(profiler_mod, "KNOWN_FAILURE_CATEGORIES")
