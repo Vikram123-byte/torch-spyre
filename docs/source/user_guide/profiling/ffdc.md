@@ -120,8 +120,9 @@ that category.
 - **Owning hook:** frontend only (does not attach `runtime.kernel_name` /
   `runtime.code_dir`).
 - **Triage first:** `failure.exception_type` / `message` / `traceback`;
-  then `artifacts.paths` (`fx_graph_*.py`, `ir_*.txt`, `output_code.py`)
-  and `environment.TORCH_COMPILE_DEBUG` / `DUMP_SPYRE_CODE`.
+  then `artifacts.paths` (`fx_graph_readable.py`, `fx_graph_transformed.py`,
+  `ir_pre_fusion.txt`, `ir_post_fusion.txt`, `output_code.py`) and
+  `environment.TORCH_COMPILE_DEBUG` / `DUMP_SPYRE_CODE`.
 - **Interpretation:** graph / decomposition / lowering failure before a
   successful bundle compile. Prefer Inductor debug artifacts over device
   state.

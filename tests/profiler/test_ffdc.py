@@ -545,6 +545,12 @@ class TestFfdcCollect:
         assert "Deferred category gaps" in text
         assert "no auto-hook" in text
         assert "runtime.kernel_name" in text
+        assert "fx_graph_readable.py" in text
+        # Docs claim these are not re-exported on torch_spyre.profiler.
+        import torch_spyre.profiler as profiler_mod
+
+        assert not hasattr(profiler_mod, "KNOWN_FAILURE_CATEGORIES")
+        assert not hasattr(profiler_mod, "HOOK_FAILURE_CATEGORIES")
 
     def test_report_filename_contains_category(self):
         try:
