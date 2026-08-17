@@ -441,6 +441,9 @@ class TestFfdcCollect:
         assert _normalize_failure_category(None) == CATEGORY_UNKNOWN
         assert _normalize_failure_category("   ") == CATEGORY_UNKNOWN
         assert _normalize_failure_category("\t\n") == CATEGORY_UNKNOWN
+        # Non-str must not crash FFDC on the failure path.
+        assert _normalize_failure_category(1) == CATEGORY_UNKNOWN  # type: ignore[arg-type]
+        assert _normalize_failure_category(["x"]) == CATEGORY_UNKNOWN  # type: ignore[arg-type]
 
     def test_normalize_failure_category_passthrough_nonempty(self):
         # Custom labels stay in the JSON body; retrieval only requires a str.
@@ -452,6 +455,19 @@ class TestFfdcCollect:
             report = collect(
                 RuntimeError("custom path"),
                 failure_category="custom_label",
+                output_dir=tmp,
+            )
+            assert report["failure"]["category"] == "custom_label"
+            assert Path(report["_report_path"]).name.startswith("ffdc_custom_label_")
+            result = get_diagnostic_report(output_dir=tmp)
+        assert result is not None
+        assert result["failure"]["category"] == "custom_label"
+
+    def test_collect_strips_custom_category_round_trips_via_retrieval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = collect(
+                RuntimeError("padded custom path"),
+                failure_category="  custom_label  ",
                 output_dir=tmp,
             )
             assert report["failure"]["category"] == "custom_label"
@@ -488,6 +504,20 @@ class TestFfdcCollect:
             )
             if cat_kw is not None:
                 cat_node = cat_kw.value
+                # with_ffdc: first positional is the category. try_collect's
+                # first positional is the exception — do not compare it.
+                if not require_keyword and call.args:
+                    pos = call.args[0]
+                    assert isinstance(pos, ast.Name) and isinstance(
+                        cat_node, ast.Name
+                    ), (
+                        f"{path}:{call.lineno}: mixed positional/keyword "
+                        f"categories must both use CATEGORY_* constants"
+                    )
+                    assert pos.id == cat_node.id, (
+                        f"{path}:{call.lineno}: positional {pos.id!r} "
+                        f"disagrees with failure_category={cat_node.id!r}"
+                    )
             elif require_keyword:
                 raise AssertionError(
                     f"{path}:{call.lineno}: try_collect must pass "
@@ -587,6 +617,19 @@ class TestFfdcCollect:
         except ValueError as exc:
             with tempfile.TemporaryDirectory() as tmp:
                 report = collect(exc, failure_category="", output_dir=tmp)
+                assert report["failure"]["category"] == CATEGORY_UNKNOWN
+                fname = Path(report["_report_path"]).name
+                assert fname.startswith("ffdc_unknown_")
+                result = get_diagnostic_report(output_dir=tmp)
+        assert result is not None
+        assert result["failure"]["category"] == CATEGORY_UNKNOWN
+
+    def test_whitespace_failure_category_normalizes_to_unknown_via_collect(self):
+        try:
+            raise ValueError("x")
+        except ValueError as exc:
+            with tempfile.TemporaryDirectory() as tmp:
+                report = collect(exc, failure_category="   ", output_dir=tmp)
                 assert report["failure"]["category"] == CATEGORY_UNKNOWN
                 fname = Path(report["_report_path"]).name
                 assert fname.startswith("ffdc_unknown_")

@@ -81,7 +81,7 @@ support enumeration.
 
 `collect()` does **not** reject non-vocabulary strings: empty /
 whitespace-only input becomes `unknown`; other non-empty strings are
-stripped and stored in the JSON body (filename characters outside
+stripped and stored in `failure.category` (filename characters outside
 `[A-Za-z0-9_-]` are sanitized for the on-disk name only).
 `get_diagnostic_report()` accepts any report whose `failure.category`
 is a string — it does not restrict to `KNOWN_FAILURE_CATEGORIES`.
@@ -115,7 +115,7 @@ that category.
 - **Triage first:** `failure.exception_type` / `message` / `traceback`;
   then `artifacts.paths` (`fx_graph_readable.py`, `fx_graph_transformed.py`,
   `ir_pre_fusion.txt`, `ir_post_fusion.txt`, `output_code.py`) and
-  `environment.TORCH_COMPILE_DEBUG` / `DUMP_SPYRE_CODE`.
+  `environment.TORCH_COMPILE_DEBUG` / `environment.DUMP_SPYRE_CODE`.
 - **Interpretation:** graph / decomposition / lowering failure before a
   successful bundle compile. Prefer Inductor debug artifacts over device
   state.
@@ -124,15 +124,14 @@ that category.
 
 - **Trigger path:** `dxp_standalone` / `dbo-opt` bundle or KTIR compile via
   `try_collect(..., failure_category=CATEGORY_COMPILE_BACKEND)` in
-  `torch_spyre/execution/async_compile.py` (`sdsc` / `dbo-opt` paths).
+  `torch_spyre/execution/async_compile.py`.
 - **Owning hook:** backend compile; passes `runtime.kernel_name` and
   `runtime.code_dir`.
 - **Triage first:** `failure.*`; `runtime.kernel_name` /
   `runtime.code_dir`; then `artifacts.paths` (`sdsc_*.json`, `*.mlir`)
-  and `environment.TORCH_COMPILE_DEBUG` / `DUMP_SPYRE_CODE`.
+  and `environment.TORCH_COMPILE_DEBUG` / `environment.DUMP_SPYRE_CODE`.
 - **Interpretation:** frontend succeeded far enough to attempt bundle /
-  KTIR (`dxp_standalone` / `dbo-opt`) compilation. Prefer kernel / MLIR
-  artifacts over FX graphs.
+  KTIR compilation. Prefer kernel / MLIR artifacts over FX graphs.
 
 #### `runtime_launch`
 
@@ -160,7 +159,7 @@ that category.
 
 #### `unknown`
 
-- **Trigger path:** manual `collect()` / `try_collect()` that omit
+- **Trigger path:** manual `collect()` / `try_collect()` calls that omit
   `failure_category`, or empty / whitespace-only category input
   normalized in `_normalize_failure_category`.
 - **Owning code:** `torch_spyre/profiler/_ffdc.py` (no auto-hook emits

@@ -66,7 +66,8 @@ CATEGORY_UNKNOWN = "unknown"
 
 # Labels auto-hooks write today (excludes CATEGORY_UNKNOWN).
 # Preferred vocabulary for docs/hooks only — collect() does not enforce
-# membership; non-empty custom labels still pass through after strip.
+# membership; non-empty custom labels are still stripped and stored
+# (not an allowlist).
 HOOK_FAILURE_CATEGORIES = frozenset(
     {
         CATEGORY_COMPILE_FRONTEND,
@@ -247,14 +248,16 @@ def _normalize_failure_category(failure_category: Optional[str]) -> str:
     """Normalize a capture-time category string for ``failure.category``.
 
     Empty / missing / whitespace-only values become ``CATEGORY_UNKNOWN``.
-    Other strings are stripped and stored in ``failure.category`` so
-    intentional custom values remain readable in the JSON body; filename
-    safety is handled separately via ``_is_safe_category_char``. Retrieval
-    only requires ``failure.category`` to be a string — it does not
-    restrict to ``KNOWN_FAILURE_CATEGORIES``. Prefer hook / manual callers
-    pass a value from ``KNOWN_FAILURE_CATEGORIES``.
+    Non-``str`` inputs also become ``CATEGORY_UNKNOWN`` so a bad caller
+    cannot crash FFDC on the failure path. Other strings are stripped and
+    stored in ``failure.category`` so intentional custom values remain
+    readable in the JSON body; filename safety is handled separately via
+    ``_is_safe_category_char``. Retrieval only requires
+    ``failure.category`` to be a string — it does not restrict to
+    ``KNOWN_FAILURE_CATEGORIES``. Prefer hook / manual callers pass a
+    value from ``KNOWN_FAILURE_CATEGORIES``.
     """
-    if failure_category is None:
+    if not isinstance(failure_category, str):
         return CATEGORY_UNKNOWN
     stripped = failure_category.strip()
     if not stripped:
