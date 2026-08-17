@@ -491,17 +491,23 @@ class TestFfdcCollect:
                 else:
                     continue
                 if fname == "try_collect":
-                    for kw in node.keywords:
-                        if kw.arg != "failure_category":
-                            continue
-                        assert isinstance(kw.value, ast.Name), (
-                            f"{path}:{node.lineno}: failure_category must use "
-                            f"CATEGORY_* constant, got {ast.dump(kw.value)}"
-                        )
-                        assert kw.value.id in name_to_value, (
-                            f"{path}:{node.lineno}: unknown category name {kw.value.id}"
-                        )
-                        emitted.add(name_to_value[kw.value.id])
+                    cat_kw = next(
+                        (kw for kw in node.keywords if kw.arg == "failure_category"),
+                        None,
+                    )
+                    assert cat_kw is not None, (
+                        f"{path}:{node.lineno}: try_collect must pass "
+                        f"failure_category=CATEGORY_* (default would be "
+                        f"CATEGORY_UNKNOWN)"
+                    )
+                    assert isinstance(cat_kw.value, ast.Name), (
+                        f"{path}:{node.lineno}: failure_category must use "
+                        f"CATEGORY_* constant, got {ast.dump(cat_kw.value)}"
+                    )
+                    assert cat_kw.value.id in name_to_value, (
+                        f"{path}:{node.lineno}: unknown category name {cat_kw.value.id}"
+                    )
+                    emitted.add(name_to_value[cat_kw.value.id])
                 elif fname == "with_ffdc":
                     assert node.args, f"{path}:{node.lineno}: with_ffdc missing args"
                     cat_node = node.args[0]

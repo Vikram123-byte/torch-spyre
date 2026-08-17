@@ -76,7 +76,7 @@ re-exported on `torch_spyre.profiler`). The auto-hook subset is
 **Capture-time labels** (not written by auto-hooks):
 
 - `unknown` — default for manual `collect()` / `try_collect()`, and the
-  value empty category input normalizes to
+  value empty category input normalizes to `unknown`
 
 | `failure.category` | Layer | When it fires | Hook location |
 |---|---|---|---|
