@@ -66,10 +66,9 @@ source of truth is `KNOWN_FAILURE_CATEGORIES` in
 re-exported on `torch_spyre.profiler`). The auto-hook subset is
 `HOOK_FAILURE_CATEGORIES` in the same file (hook-emitted labels today;
 `unknown` is capture-time only — default when `collect()` /
-`try_collect()` omit `failure_category`, and the value empty /
-whitespace-only / non-`str` category input normalizes to `unknown`).
-The table below is the short index; per-category triage notes follow in
-Field / support enumeration.
+`try_collect()` omit `failure_category`, or when empty, whitespace-only,
+or non-`str` input is passed). The table below is the short index;
+per-category triage notes follow in Field / support enumeration.
 
 | `failure.category` | Layer | When it fires | Hook location |
 |---|---|---|---|
@@ -77,7 +76,7 @@ Field / support enumeration.
 | `compile_backend` | Backend | `dxp_standalone` (`sdsc`) or `dbo-opt` (`_compile_ktir_with_dbo`, including missing spyrecode) fails after artifact emit | `torch_spyre/execution/async_compile.py` |
 | `runtime_launch` | Runtime | Kernel launch or `launch_jobplan` fails on device | `torch_spyre/execution/kernel_runner.py` (`SpyreSDSCKernelRunner`) |
 | `unimplemented` | Runtime | An op reaches the runtime without a Spyre lowering | `torch_spyre/execution/kernel_runner.py` (`SpyreUnimplementedRunner`) |
-| `unknown` | — | Manual `collect()` / empty, whitespace-only, or non-`str` category normalized at capture time | `torch_spyre/profiler/_ffdc.py` (no auto-hook) |
+| `unknown` | — | `collect()` / `try_collect()` omit `failure_category`, or empty / whitespace-only / non-`str` input | `torch_spyre/profiler/_ffdc.py` (no auto-hook) |
 
 `collect()` does **not** reject non-vocabulary strings: empty /
 whitespace-only / non-`str` input becomes `unknown`; other non-empty
@@ -118,10 +117,11 @@ that category.
   `ir_pre_fusion.txt`, `ir_post_fusion.txt`, `output_code.py`) and
   `environment.TORCH_COMPILE_DEBUG` / `environment.DUMP_SPYRE_CODE`.
 - **Interpretation:** usually a graph / decomposition / lowering failure
-  that surfaced through `compile_fx`. Also covers unhooked emit failures
-  (`generate_bundle` / `generate_ktir`) when they bubble to `compile_fx`.
-  Use the traceback to decide whether to prefer Inductor FX/IR artifacts
-  or the kernel `code_dir` on disk.
+  that surfaced through `compile_fx`. Also covers unhooked emit,
+  pre-tool checks, and `prepare_kernel` failures when they bubble to
+  `compile_fx`. This hook does not set `runtime.code_dir`; use the
+  traceback and any on-disk compiler trees, not a report field this hook
+  never sets.
 
 #### `compile_backend`
 
@@ -152,8 +152,10 @@ that category.
   then any matching paths already listed under `artifacts.paths`, or open
   `code_dir` on the host that produced the report.
 - **Interpretation:** the compiled kernel existed far enough to attempt
-  device launch (`launch_jobplan` / prepare path). Prefer hardware and
-  runtime context over Inductor IR when the traceback is inside the runner.
+  device launch (`launch_jobplan`). `prepare_kernel` in
+  `SpyreSDSCKernelRunner.__init__` is not this category (see Deferred
+  category gaps). Prefer hardware and runtime context over Inductor IR
+  when the traceback is inside the runner.
 
 #### `unimplemented`
 
@@ -187,11 +189,14 @@ missing vocabulary entries):
 - Profiling / capture-pipeline failure category
 - Finer per-pass frontend categories (decomposition / lowering still share
   `compile_frontend` when they surface through `compile_fx`)
-- `generate_bundle` / `generate_ktir` emit failures before `dxp_standalone`
-  / `dbo-opt` — unhooked at the emit site today; if they surface through
-  `compile_fx`, they are labeled `compile_frontend`
+- `generate_bundle` / `generate_ktir` (and persisting `.ktir` to disk)
+  before `dxp_standalone` / `dbo-opt` — unhooked at the emit site today;
+  if they surface through `compile_fx`, they are labeled `compile_frontend`
 - Pre-tool checks such as `_check_ktir_device_prerequisites()` outside the
   `dbo-opt` `try_collect` — same bubble behavior as emit helpers
+- `SpyreSDSCKernelRunner.__init__` / `prepare_kernel` — after backend
+  tools succeed, before `run()`; if they surface through `compile_fx`,
+  they are labeled `compile_frontend`
 
 ## Where reports are stored
 
@@ -270,7 +275,7 @@ Capture and retrieval can use different environment variables:
 | `failure` | `category` (encodes layer: frontend / backend / runtime), `exception_type`, `message`, `file`, `lineno` (innermost raise site), `traceback` — start here |
 | `artifacts` | `paths` lists compiler files found near the failure (`fx_graph_readable.py`, `fx_graph_transformed.py`, `ir_*.txt`, `output_code.py`, `sdsc_*.json`, `*.mlir`, logs) |
 | `environment` | Values of `TORCH_SPYRE_FFDC`, `TORCH_COMPILE_DEBUG`, `DUMP_SPYRE_CODE`, `SENCORES`, and other captured env vars |
-| `runtime` | `kernel_name` and `code_dir` when the failure happened during kernel execution |
+| `runtime` | `kernel_name` and `code_dir` when a backend or runtime hook attached them (not frontend) |
 | `hardware_state` | `spyre_available` and any probe notes |
 | `collector` | `completeness_pct`, `missing_fields`, `collector_errors` — whether capture itself succeeded |
 | `_report_path` | Absolute path to the loaded JSON file on the host that produced it |
@@ -314,11 +319,10 @@ cd /dev/shm/workdir/torch-spyre
 TORCH_SPYRE_FFDC=1 TORCH_COMPILE_DEBUG=1 python your_script.py
 ```
 
-To exercise runtime hooks on hardware without a full model failure:
-
-```bash
-TORCH_SPYRE_FFDC=1 TORCH_COMPILE_DEBUG=1 python tools/ffdc_trigger.py
-```
+Runtime hooks fire from `SpyreSDSCKernelRunner.run` (`launch_jobplan`) and
+`SpyreUnimplementedRunner.run`. A fake `code_dir` that fails in
+`prepare_kernel` (`__init__`) is **not** `runtime_launch` and will not
+write that category.
 
 Print the exact report path that `get_diagnostic_report()` would return:
 
@@ -349,13 +353,15 @@ directory as an artifact.
 
 - FFDC is opt-in. If `TORCH_SPYRE_FFDC=1` was not set when the failure
   happened, no new report is written.
-- Capture happens only at hooked call sites: `compile_fx` (frontend),
-  `async_compile.sdsc` / `dxp_standalone`, and
-  `async_compile._compile_ktir_with_dbo` / `dbo-opt` (backend tools).
-  Emit helpers (`generate_bundle` / `generate_ktir`) and other pre-tool
-  checks are not separately hooked; if they surface through `compile_fx`,
-  they are labeled `compile_frontend`. There is no separate per-pass
-  category today.
+- Capture happens only at hooked call sites: `compile_fx` (frontend);
+  `async_compile.sdsc` / `dxp_standalone` and
+  `async_compile._compile_ktir_with_dbo` / `dbo-opt` (backend tools);
+  `SpyreSDSCKernelRunner.run` / `launch_jobplan` (`runtime_launch`); and
+  `SpyreUnimplementedRunner.run` (`unimplemented`). Emit helpers
+  (`generate_bundle` / `generate_ktir`), pre-tool checks, and
+  `prepare_kernel` in `SpyreSDSCKernelRunner.__init__` are not separately
+  hooked; if they surface through `compile_fx`, they are labeled
+  `compile_frontend`. There is no separate per-pass category today.
 - `hardware_state` is intentionally lightweight today: it records
   `spyre_available` plus a short note when the probe times out, errors,
   or simply finds no Spyre hardware available (the common case off-pod).
