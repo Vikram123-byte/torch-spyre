@@ -16,6 +16,7 @@ import json
 import pytest
 import unittest
 import torch
+import math
 import torch.nn.functional as F
 from torch.profiler import profile, ProfilerActivity, _memory_profiler
 from torch.testing._internal.common_utils import (
@@ -366,3 +367,221 @@ class TestMemoryProfilerTimeline(TestCase):
 
         for event in expected:
             self.assertTrue(event in actual, f"event: {event} was not found in actual.")
+
+
+class TestOverExtendedKernelDurations(TestCase):
+    ACTIVITY_TYPES = {
+        "kernel",
+        "gpu_memcpy",
+        "gpu_memset",
+    }
+
+    def _find_over_extended_activities(self, events, threshold_ms=1000):
+        """
+        Return valid tracked events and any whose duration exceeds
+        the supplied threshold.
+        """
+
+        tracked_events = []
+
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+
+            if event.get("ph") != "X":
+                continue
+
+            if event.get("cat") not in TestOverExtendedKernelDurations.ACTIVITY_TYPES:
+                continue
+
+            timestamp = event.get("ts")
+            duration = event.get("dur")
+            name = event.get("name", "unknown")
+
+            assert (
+                isinstance(timestamp, (int, float))
+                and not isinstance(timestamp, bool)
+                and math.isfinite(timestamp)
+            ), (
+                f"Event {name} must have a finite numeric tiestamp "
+                f"(ts={timestamp}, dur={duration})"
+            )
+
+            assert (
+                isinstance(duration, (int, float))
+                and not isinstance(duration, bool)
+                and math.isfinite(duration)
+                and duration > 0
+            ), (
+                f"Event {name} must have a finite positive duration "
+                f"(ts={timestamp}, dur={duration})"
+            )
+
+            tracked_events.append(event)
+
+        over_extended = [
+            event for event in tracked_events if event["dur"] > threshold_ms
+        ]
+
+        return tracked_events, over_extended
+
+    def test_find_over_extended_activities(self):
+        """Verify detection of activities that exceed the duration threshold."""
+
+        events = [
+            {
+                "ph": "X",
+                "cat": "kernel",
+                "name": "short_kernel",
+                "ts": 0,
+                "dur": 500,
+            },
+            {
+                "ph": "X",
+                "cat": "gpu_memcpy",
+                "name": "long_copy",
+                "ts": 1000,
+                "dur": 1500,
+            },
+            {
+                "ph": "X",
+                "cat": "gpu_memset",
+                "name": "short_memset",
+                "ts": 3000,
+                "dur": 200,
+            },
+        ]
+
+        tracked_events, over_extended = self._find_over_extended_activities(
+            events,
+            threshold_ms=1000,
+        )
+
+        self.assertEqual(len(tracked_events), 3)
+        self.assertEqual(len(over_extended), 1)
+        self.assertEqual(over_extended[0]["name"], "long_copy")
+
+    def test_find_over_extended_activities_invalid_events(self):
+        """Verify invalid timing data is rejected."""
+
+        zero_duration_event = [
+            {
+                "ph": "X",
+                "cat": "kernel",
+                "name": "bad_kernel",
+                "ts": 0,
+                "dur": 0,
+            }
+        ]
+
+        missing_timestamp_event = [
+            {
+                "ph": "X",
+                "cat": "gpu_memcpy",
+                "name": "missing_ts",
+                "dur": 10,
+            }
+        ]
+
+        missing_duration_event = [
+            {
+                "ph": "X",
+                "cat": "gpu_memset",
+                "name": "missing_dur",
+                "ts": 0,
+            }
+        ]
+
+        with self.assertRaises(AssertionError):
+            self._find_over_extended_activities(zero_duration_event)
+
+        with self.assertRaises(AssertionError):
+            self._find_over_extended_activities(missing_timestamp_event)
+
+        with self.assertRaises(AssertionError):
+            self._find_over_extended_activities(missing_duration_event)
+
+    @pytest.mark.requires_spyre_profiler
+    def test_activity_duration_limit(self, tmp_path):
+        """
+        Fail if any kernel, memcpy, or memset event exceeds 1000 ms.
+        """
+
+        trace_file = tmp_path / "activity_duration_trace.json"
+
+        cpu_src = torch.randn(64, 64, dtype=torch.float16)
+
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]
+        ) as prof:
+            device_tensor = cpu_src.to("spyre")  # H2D memcpy
+
+            result = torch.matmul(device_tensor, device_tensor)
+            result = F.gelu(result)
+
+            _ = torch.zeros(
+                64,
+                64,
+                dtype=torch.float16,
+                device="spyre",
+            )  # memset
+
+            _ = result.cpu()  # D2H memcpy
+
+            torch.spyre.synchronize()
+
+        prof.export_chrome_trace(str(trace_file))
+
+        self.assertTrue(
+            trace_file.exists(),
+            "Chrome trace file was not created",
+        )
+
+        with trace_file.open("r", encoding="utf-8") as trace:
+            trace_data = json.load(trace)
+
+        self.assertIsInstance(
+            trace_data,
+            dict,
+            "Trace JSON must be a dictionary",
+        )
+
+        self.assertIn(
+            "traceEvents",
+            trace_data,
+            "Chrome trace is missing the 'traceEvents' key",
+        )
+
+        trace_events = trace_data["traceEvents"]
+
+        self.assertIsInstance(
+            trace_events,
+            list,
+            "'traceEvents' must contain a list",
+        )
+
+        tracked_events, over_extended = self._find_over_extended_activities(
+            trace_events,
+            threshold_ms=1000,
+        )
+
+        self.assertGreater(
+            len(tracked_events),
+            0,
+            "Expected at least one kernel/memcpy/memset event",
+        )
+
+        if over_extended:
+            details = []
+
+            for event in over_extended[:20]:
+                details.append(
+                    f"{event.get('cat')} "
+                    f"{event.get('name', 'unknown')} "
+                    f"(ts={event['ts']}, dur={event['dur']})"
+                )
+
+            pytest.fail(
+                f"{len(over_extended)} tracked event(s) exceeded 1000 ms:\n"
+                + "\n".join(details)
+            )
