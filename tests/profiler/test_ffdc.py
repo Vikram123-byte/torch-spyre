@@ -421,18 +421,11 @@ class TestFfdcCollect:
             assert report["failure"]["category"] == category
 
     def test_known_and_hook_failure_category_sets(self):
-        assert HOOK_FAILURE_CATEGORIES == frozenset(
-            {
-                CATEGORY_COMPILE_FRONTEND,
-                CATEGORY_COMPILE_BACKEND,
-                CATEGORY_RUNTIME_LAUNCH,
-                CATEGORY_UNIMPLEMENTED,
-            }
-        )
-        assert KNOWN_FAILURE_CATEGORIES == frozenset(
-            {*HOOK_FAILURE_CATEGORIES, CATEGORY_UNKNOWN}
-        )
+        # Membership only — AST inventory owns the exact hook label set.
         assert CATEGORY_UNKNOWN not in HOOK_FAILURE_CATEGORIES
+        assert KNOWN_FAILURE_CATEGORIES == (
+            HOOK_FAILURE_CATEGORIES | {CATEGORY_UNKNOWN}
+        )
         for category in KNOWN_FAILURE_CATEGORIES:
             assert _normalize_failure_category(category) == category
 
@@ -442,28 +435,17 @@ class TestFfdcCollect:
         assert _normalize_failure_category("   ") == CATEGORY_UNKNOWN
         assert _normalize_failure_category("\t\n") == CATEGORY_UNKNOWN
         # Non-str must not crash FFDC on the failure path.
-        assert _normalize_failure_category(1) == CATEGORY_UNKNOWN  # type: ignore[arg-type]
-        assert _normalize_failure_category(["x"]) == CATEGORY_UNKNOWN  # type: ignore[arg-type]
+        assert _normalize_failure_category(1) == CATEGORY_UNKNOWN
+        assert _normalize_failure_category(["x"]) == CATEGORY_UNKNOWN
 
     def test_normalize_failure_category_passthrough_nonempty(self):
         # Custom labels stay in the JSON body; retrieval only requires a str.
         assert _normalize_failure_category("custom_label") == "custom_label"
         assert _normalize_failure_category("  custom_label  ") == "custom_label"
 
-    def test_collect_custom_category_round_trips_via_retrieval(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            report = collect(
-                RuntimeError("custom path"),
-                failure_category="custom_label",
-                output_dir=tmp,
-            )
-            assert report["failure"]["category"] == "custom_label"
-            assert Path(report["_report_path"]).name.startswith("ffdc_custom_label_")
-            result = get_diagnostic_report(output_dir=tmp)
-        assert result is not None
-        assert result["failure"]["category"] == "custom_label"
-
     def test_collect_strips_custom_category_round_trips_via_retrieval(self):
+        # Public surface: strip + store + filename + retrieval (covers plain
+        # custom labels too — strip is a no-op when there is no padding).
         with tempfile.TemporaryDirectory() as tmp:
             report = collect(
                 RuntimeError("padded custom path"),
@@ -493,6 +475,7 @@ class TestFfdcCollect:
             "CATEGORY_RUNTIME_LAUNCH": CATEGORY_RUNTIME_LAUNCH,
             "CATEGORY_UNIMPLEMENTED": CATEGORY_UNIMPLEMENTED,
         }
+        assert set(name_to_value.values()) == HOOK_FAILURE_CATEGORIES
         emitted: set[str] = set()
 
         def _hook_category_name(
@@ -584,14 +567,19 @@ class TestFfdcCollect:
             assert f"`{category}`" in text
         assert "KNOWN_FAILURE_CATEGORIES" in text
         assert "HOOK_FAILURE_CATEGORIES" in text
-        assert "hook-emitted labels" in text
         assert "Field / support enumeration" in text
         assert "Deferred category gaps" in text
         assert "no auto-hook" in text
-        assert "runtime.kernel_name" in text
-        assert "fx_graph_readable.py" in text
+        # Hook sites must stay accurate (not bare KTIR / bundle emit).
+        assert "dxp_standalone" in text
         assert "dbo-opt" in text
-        assert "KTIR" in text
+        assert "_compile_ktir_with_dbo" in text
+        assert "generate_bundle" in text
+        assert "generate_ktir" in text
+        assert "fx_graph_readable.py" in text
+        # Guard against prior overclaims that conflated emit with tool hooks.
+        assert "while generating" not in text
+        assert "backend bundle generation" not in text
 
     def test_category_sets_not_reexported_on_profiler(self):
         import torch_spyre.profiler as profiler_mod
@@ -611,31 +599,19 @@ class TestFfdcCollect:
         assert fname.startswith("ffdc_compile_frontend_")
         assert ".json" in fname
 
-    def test_empty_failure_category_normalizes_to_unknown(self):
-        try:
-            raise ValueError("x")
-        except ValueError as exc:
-            with tempfile.TemporaryDirectory() as tmp:
-                report = collect(exc, failure_category="", output_dir=tmp)
-                assert report["failure"]["category"] == CATEGORY_UNKNOWN
-                fname = Path(report["_report_path"]).name
-                assert fname.startswith("ffdc_unknown_")
-                result = get_diagnostic_report(output_dir=tmp)
-        assert result is not None
-        assert result["failure"]["category"] == CATEGORY_UNKNOWN
-
-    def test_whitespace_failure_category_normalizes_to_unknown_via_collect(self):
-        try:
-            raise ValueError("x")
-        except ValueError as exc:
-            with tempfile.TemporaryDirectory() as tmp:
-                report = collect(exc, failure_category="   ", output_dir=tmp)
-                assert report["failure"]["category"] == CATEGORY_UNKNOWN
-                fname = Path(report["_report_path"]).name
-                assert fname.startswith("ffdc_unknown_")
-                result = get_diagnostic_report(output_dir=tmp)
-        assert result is not None
-        assert result["failure"]["category"] == CATEGORY_UNKNOWN
+    def test_empty_or_whitespace_failure_category_normalizes_to_unknown(self):
+        for category in ("", "   "):
+            try:
+                raise ValueError("x")
+            except ValueError as exc:
+                with tempfile.TemporaryDirectory() as tmp:
+                    report = collect(exc, failure_category=category, output_dir=tmp)
+                    assert report["failure"]["category"] == CATEGORY_UNKNOWN
+                    fname = Path(report["_report_path"]).name
+                    assert fname.startswith("ffdc_unknown_")
+                    result = get_diagnostic_report(output_dir=tmp)
+            assert result is not None
+            assert result["failure"]["category"] == CATEGORY_UNKNOWN
 
     def test_collect_filename_has_report_sort_key(self):
         try:

@@ -244,7 +244,7 @@ def _is_safe_category_char(c: str) -> bool:
     return c.isascii() and (c.isalnum() or c in "_-")
 
 
-def _normalize_failure_category(failure_category: Optional[str]) -> str:
+def _normalize_failure_category(failure_category: Any) -> str:
     """Normalize a capture-time category string for ``failure.category``.
 
     Empty / missing / whitespace-only values become ``CATEGORY_UNKNOWN``.
@@ -433,7 +433,7 @@ def _collect_hardware_state() -> dict:
 
 def collect(
     exc: Optional[BaseException] = None,
-    failure_category: Optional[str] = CATEGORY_UNKNOWN,
+    failure_category: Any = CATEGORY_UNKNOWN,
     kernel_name: Optional[str] = None,
     code_dir: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -446,8 +446,8 @@ def collect(
         failure_category: Prefer a value from ``KNOWN_FAILURE_CATEGORIES``
             (``compile_frontend``, ``compile_backend``, ``runtime_launch``,
             ``unimplemented``, ``unknown``). Empty / missing /
-            whitespace-only values normalize to ``unknown``; other
-            non-empty strings are stripped and stored in
+            whitespace-only / non-``str`` values normalize to ``unknown``;
+            other non-empty strings are stripped and stored in
             ``failure.category``. Auto-hooks emit only values in
             ``HOOK_FAILURE_CATEGORIES``.
         kernel_name: Kernel name from SpyreSDSCKernelRunner if available.
