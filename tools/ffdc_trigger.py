@@ -27,12 +27,14 @@ Run from repo root with:
 import glob
 import json
 import os
+import tempfile
 import time
 from typing import Any
 
-import torch  # noqa: F401 — ensures torch_spyre._C loads via real extension
-import torch_spyre  # noqa: F401
+import torch
+import torch_spyre
 
+from torch_spyre.execution import kernel_runner as kr
 from torch_spyre.execution.kernel_runner import (
     SpyreSDSCKernelRunner,
     SpyreUnimplementedRunner,
@@ -57,41 +59,111 @@ def _print_collector_stats(collector: dict[str, Any]) -> None:
     )
 
 
+def _write_minimal_spyrecode(parent: str) -> str:
+    """Write a spyreCodeDir that prepare_kernel can load; return ``parent``."""
+    spyrecode_dir = os.path.join(parent, "spyreCodeDir")
+    os.makedirs(spyrecode_dir, exist_ok=True)
+    spyrecode_json = {
+        "JobPreparationPlan": [
+            {"command": "Allocate", "properties": {"size": "1024"}},
+            {
+                "command": "InitTransfer",
+                "properties": {
+                    "init_bin_file": "init_binary.bin",
+                    "dev_ptr": "120259084288",
+                    "size": "1024",
+                },
+            },
+        ],
+        "JobExecPlan": [
+            {
+                "command": "ComputeOnDevice",
+                "properties": {"job_bin_ptr": "120259084288"},
+            }
+        ],
+    }
+    with open(os.path.join(spyrecode_dir, "spyrecode.json"), "w") as f:
+        json.dump(spyrecode_json, f)
+    with open(os.path.join(spyrecode_dir, "init_binary.bin"), "wb") as f:
+        f.write(b"\x00" * 1024)
+    return parent
+
+
+def _get_diagnostic_report(output_dir=None):
+    getter = getattr(getattr(torch, "spyre", None), "get_diagnostic_report", None)
+    if getter is None:
+        getter = torch_spyre.profiler.get_diagnostic_report
+    if output_dir is None:
+        return getter()
+    return getter(output_dir=output_dir)
+
+
+def _print_retrieved(output_dir=None) -> None:
+    report = _get_diagnostic_report(output_dir)
+    if report is None:
+        print("  get_diagnostic_report: None")
+        return
+    print(f"  failure.category : {report['failure']['category']}")
+    print(f"  _report_path     : {report['_report_path']}")
+
+
+def _record_report(reports, category: str, since_ts) -> None:
+    report_path = _newest_since(str(FFDC_OUT / f"ffdc_{category}_*.json"), since_ts)
+    if report_path:
+        with open(report_path) as f:
+            report = json.load(f)
+        reports.append((category, report))
+        print(f"  Report written: {report_path}")
+        _print_collector_stats(report["collector"])
+        _print_retrieved()
+    else:
+        print("  [WARN] No report found — check FFDC output_dir")
+
+
 def main():
     print("\n=== FFDC Real Trigger ===\n")
     reports = []
     os.environ.setdefault("TORCH_SPYRE_FFDC", "1")
 
     # ── Scenario A: runtime_launch failure ──────────────────────────────────────
-    # SpyreSDSCKernelRunner.__init__ calls prepare_kernel(); with a fake code_dir
-    # that fails or run() fails in launch_jobplan, FFDC should capture
-    # CATEGORY_RUNTIME_LAUNCH.
+    # SpyreSDSCKernelRunner.__init__ calls prepare_kernel(code_dir/spyreCodeDir).
+    # Survive that with a minimal spyrecode tree, then fail in run() so
+    # @with_ffdc(CATEGORY_RUNTIME_LAUNCH) fires. Do not claim runtime_launch
+    # if prepare_kernel raises in __init__.
     os.environ.pop("DUMP_SPYRE_CODE", None)
 
-    print("Scenario A: SpyreSDSCKernelRunner.run() → launch_kernel() raises")
-    runner = SpyreSDSCKernelRunner(
-        name="test_kernel_add",
-        code_dir="/tmp/fake_spyre_code_dir",
-    )
-    t0 = time.time()
+    print("Scenario A: SpyreSDSCKernelRunner.run() → launch_jobplan raises")
+    code_dir = _write_minimal_spyrecode(tempfile.mkdtemp(prefix="ffdc_spyrecode_"))
+    runner = None
     try:
-        runner.run()
-    except RuntimeError as e:
-        print(f"  Exception re-raised (expected): {e}")
-    else:
-        raise AssertionError(
-            "Expected RuntimeError from runner.run() but none was raised"
+        torch.zeros(1, device="spyre")
+        runner = SpyreSDSCKernelRunner(
+            name="test_kernel_add",
+            code_dir=code_dir,
         )
+    except Exception as e:
+        print(f"  [SKIP] prepare_kernel failed in __init__: {e}")
+        print("  Not claiming runtime_launch (hook is on run(), not __init__).")
 
-    report_path = _newest_since(str(FFDC_OUT / "ffdc_runtime_launch_*.json"), t0)
-    if report_path:
-        with open(report_path) as f:
-            report = json.load(f)
-        reports.append(("runtime_launch", report))
-        print(f"  Report written: {report_path}")
-        _print_collector_stats(report["collector"])
-    else:
-        print("  [WARN] No report found — check FFDC output_dir")
+    if runner is not None:
+        orig_launch = kr.launch_jobplan
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("ffdc launch boom")
+
+        kr.launch_jobplan = boom
+        t0 = time.time()
+        try:
+            runner.run()
+        except RuntimeError as e:
+            print(f"  Exception re-raised (expected): {e}")
+        else:
+            raise AssertionError(
+                "Expected RuntimeError from runner.run() but none was raised"
+            )
+        finally:
+            kr.launch_jobplan = orig_launch
+        _record_report(reports, "runtime_launch", t0)
 
     # ── Scenario B: unimplemented op failure ────────────────────────────────────
     print(
@@ -111,17 +183,7 @@ def main():
             "Expected RuntimeError from urunner.run() but none was raised"
         )
 
-    report_path_u: Any | None = _newest_since(
-        str(FFDC_OUT / "ffdc_unimplemented_*.json"), t0
-    )
-    if report_path_u:
-        with open(report_path_u) as f:
-            report_u = json.load(f)
-        reports.append(("unimplemented", report_u))
-        print(f"  Report written: {report_path_u}")
-        _print_collector_stats(report_u["collector"])
-    else:
-        print("  [WARN] No report found — check FFDC output_dir")
+    _record_report(reports, "unimplemented", t0)
 
     # ── Summary ─────────────────────────────────────────────────────────────────
     print("\n=== Captured Report Fields ===")

@@ -136,6 +136,58 @@ def _reimport(monkeypatch, name):
     return importlib.import_module(name)
 
 
+def _spyre_hw_available() -> bool:
+    """True when the Spyre device module is registered and reports a card."""
+    try:
+        import torch
+
+        spyre = getattr(torch, "spyre", None)
+        if spyre is None:
+            return False
+        return bool(spyre.is_available())
+    except Exception:
+        return False
+
+
+def _trigger_and_retrieve_ffdc(
+    monkeypatch,
+    tmp_path,
+    trigger,
+    *,
+    expected_category: str,
+    match: str,
+):
+    """Opt-in capture to an isolated dir, trigger a hook, retrieve the report.
+
+    Integration success is a written JSON plus
+    ``torch.spyre.get_diagnostic_report`` (or ``make_spyre_module`` fallback).
+    Do not assert ``collector.success``: a cold artifact scan can time out.
+    """
+    import torch
+
+    monkeypatch.setenv("TORCH_SPYRE_FFDC", "1")
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path))
+    reports_dir = tmp_path / "torch-spyre" / "ffdc_reports"
+
+    with pytest.raises(RuntimeError, match=match):
+        trigger()
+
+    reports = sorted(reports_dir.glob("ffdc_*.json"))
+    assert len(reports) == 1
+    assert reports[0].name.startswith(f"ffdc_{expected_category}_")
+
+    getter = getattr(getattr(torch, "spyre", None), "get_diagnostic_report", None)
+    if getter is None:
+        getter = make_spyre_module().get_diagnostic_report
+    result = getter(output_dir=str(reports_dir))
+    assert result is not None
+    assert result["failure"]["category"] == expected_category
+    assert result["_report_path"] == str(reports[0].resolve())
+    assert result["failure"]["traceback"]
+    assert match in (result["failure"]["message"] or "")
+    return result
+
+
 class TestFfdcCollect:
     def _collect_to_tmpdir(self, exc=None, **kwargs):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1078,6 +1130,48 @@ class TestFfdcKernelRunner:
 
         with pytest.raises(RuntimeError, match="launch_jobplan failed"):
             runner.run()
+
+    def test_unimplemented_hook_writes_and_retrieves(self, monkeypatch, tmp_path):
+        """Real ``SpyreUnimplementedRunner.run`` writes and retrieves a report."""
+        mod = self._load_kernel_runner(monkeypatch)
+        runner = mod.SpyreUnimplementedRunner("k", "aten::foo")
+        _trigger_and_retrieve_ffdc(
+            monkeypatch,
+            tmp_path,
+            runner.run,
+            expected_category=CATEGORY_UNIMPLEMENTED,
+            match="unimplemented operation",
+        )
+
+    @pytest.mark.skipif(
+        not _spyre_hw_available(),
+        reason="requires Spyre hardware",
+    )
+    def test_runtime_launch_after_prepare_writes_and_retrieves(
+        self, monkeypatch, tmp_path
+    ):
+        """``run()`` / ``launch_jobplan`` after a successful ``prepare_kernel``."""
+        import torch
+        from test_prepare_kernel import TestPrepareKernel as tpk
+        from torch_spyre.execution import kernel_runner as kr
+
+        torch.zeros(1, device="spyre")
+        code_dir = tmp_path / "kernel"
+        code_dir.mkdir()
+        tpk().create_mock_spyrecode(str(code_dir))
+        runner = kr.SpyreSDSCKernelRunner("ffdc_launch", str(code_dir))
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("ffdc launch boom")
+
+        monkeypatch.setattr(kr, "launch_jobplan", boom)
+        _trigger_and_retrieve_ffdc(
+            monkeypatch,
+            tmp_path,
+            runner.run,
+            expected_category=CATEGORY_RUNTIME_LAUNCH,
+            match="ffdc launch boom",
+        )
 
 
 class TestFfdcProfilerApi:
