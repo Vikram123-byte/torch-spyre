@@ -28,7 +28,6 @@ import glob
 import json
 import os
 import tempfile
-import time
 from typing import Any
 
 import torch
@@ -44,11 +43,21 @@ from torch_spyre.profiler._ffdc import _default_output_dir
 FFDC_OUT = _default_output_dir()
 
 
-def _newest_since(pattern, since_ts):
-    matches = [
-        m for m in glob.glob(pattern, recursive=True) if os.path.getmtime(m) > since_ts
-    ]
-    return max(matches, key=os.path.getmtime) if matches else None
+def _category_pattern(category: str) -> str:
+    return str(FFDC_OUT / f"ffdc_{category}_*.json")
+
+
+def _snapshot_reports(pattern: str) -> set[str]:
+    return set(glob.glob(pattern))
+
+
+def _new_report_path(pattern: str, before: set[str]) -> str | None:
+    """Return a report created after ``before``, ignoring mtime resolution."""
+    new = [path for path in glob.glob(pattern) if path not in before]
+    if not new:
+        return None
+    # Same-category filenames sort by the embedded timestamp, not st_mtime.
+    return max(new)
 
 
 def _print_collector_stats(collector: dict[str, Any]) -> None:
@@ -107,8 +116,8 @@ def _print_retrieved(output_dir=None) -> None:
     print(f"  _report_path     : {report['_report_path']}")
 
 
-def _record_report(reports, category: str, since_ts) -> None:
-    report_path = _newest_since(str(FFDC_OUT / f"ffdc_{category}_*.json"), since_ts)
+def _record_report(reports, category: str, before: set[str]) -> None:
+    report_path = _new_report_path(_category_pattern(category), before)
     if report_path:
         with open(report_path) as f:
             report = json.load(f)
@@ -153,7 +162,7 @@ def main():
                 raise RuntimeError("ffdc launch boom")
 
             kr.launch_jobplan = boom
-            t0 = time.time()
+            before = _snapshot_reports(_category_pattern("runtime_launch"))
             try:
                 runner.run()
             except RuntimeError as e:
@@ -164,7 +173,7 @@ def main():
                 )
             finally:
                 kr.launch_jobplan = orig_launch
-            _record_report(reports, "runtime_launch", t0)
+            _record_report(reports, "runtime_launch", before)
 
     # ── Scenario B: unimplemented op failure ────────────────────────────────────
     print(
@@ -174,7 +183,7 @@ def main():
         name="test_kernel_fft",
         op="aten::fft_fft",
     )
-    t0 = time.time()
+    before = _snapshot_reports(_category_pattern("unimplemented"))
     try:
         urunner.run()
     except RuntimeError as e:
@@ -184,7 +193,7 @@ def main():
             "Expected RuntimeError from urunner.run() but none was raised"
         )
 
-    _record_report(reports, "unimplemented", t0)
+    _record_report(reports, "unimplemented", before)
 
     # ── Summary ─────────────────────────────────────────────────────────────────
     print("\n=== Captured Report Fields ===")
