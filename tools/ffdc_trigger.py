@@ -30,21 +30,20 @@ import os
 import tempfile
 from typing import Any
 
+from pathlib import Path
+
 import torch
-import torch_spyre
 
 from torch_spyre.execution import kernel_runner as kr
 from torch_spyre.execution.kernel_runner import (
     SpyreSDSCKernelRunner,
     SpyreUnimplementedRunner,
 )
-from torch_spyre.profiler._ffdc import _default_output_dir
-
-FFDC_OUT = _default_output_dir()
+from torch_spyre.profiler._ffdc import _default_output_dir, _report_sort_key
 
 
-def _category_pattern(category: str) -> str:
-    return str(FFDC_OUT / f"ffdc_{category}_*.json")
+def _category_pattern(output_dir: Path, category: str) -> str:
+    return str(output_dir / f"ffdc_{category}_*.json")
 
 
 def _snapshot_reports(pattern: str) -> set[str]:
@@ -53,11 +52,15 @@ def _snapshot_reports(pattern: str) -> set[str]:
 
 def _new_report_path(pattern: str, before: set[str]) -> str | None:
     """Return a report created after ``before``, ignoring mtime resolution."""
-    new = [path for path in glob.glob(pattern) if path not in before]
-    if not new:
+    new = [Path(path) for path in glob.glob(pattern) if path not in before]
+    keyed = []
+    for path in new:
+        sort_key = _report_sort_key(path)
+        if sort_key is not None:
+            keyed.append((sort_key, path))
+    if not keyed:
         return None
-    # Same-category filenames sort by the embedded timestamp, not st_mtime.
-    return max(new)
+    return str(max(keyed, key=lambda item: item[0])[1].resolve())
 
 
 def _print_collector_stats(collector: dict[str, Any]) -> None:
@@ -98,41 +101,38 @@ def _write_minimal_spyrecode(parent: str) -> str:
     return parent
 
 
-def _get_diagnostic_report(output_dir=None):
-    getter = getattr(getattr(torch, "spyre", None), "get_diagnostic_report", None)
-    if getter is None:
-        getter = torch_spyre.profiler.get_diagnostic_report
-    if output_dir is None:
-        return getter()
-    return getter(output_dir=output_dir)
+def _public_get_diagnostic_report():
+    """Prefer the user-facing ``torch.spyre.get_diagnostic_report`` binding."""
+    if hasattr(torch, "spyre") and hasattr(torch.spyre, "get_diagnostic_report"):
+        print("  using torch.spyre.get_diagnostic_report()")
+        return torch.spyre.get_diagnostic_report()
+    print("  torch.spyre.get_diagnostic_report is not bound")
+    return None
 
 
-def _print_retrieved(output_dir=None) -> None:
-    report = _get_diagnostic_report(output_dir)
-    if report is None:
-        print("  get_diagnostic_report: None")
+def _record_report(reports, category: str, before: set[str], output_dir: Path) -> None:
+    report_path = _new_report_path(_category_pattern(output_dir, category), before)
+    if report_path is None:
+        print("  [WARN] No new report found — check FFDC output_dir")
         return
-    print(f"  failure.category : {report['failure']['category']}")
-    print(f"  _report_path     : {report['_report_path']}")
-
-
-def _record_report(reports, category: str, before: set[str]) -> None:
-    report_path = _new_report_path(_category_pattern(category), before)
-    if report_path:
-        with open(report_path) as f:
-            report = json.load(f)
-        reports.append((category, report))
-        print(f"  Report written: {report_path}")
-        _print_collector_stats(report["collector"])
-        _print_retrieved()
-    else:
-        print("  [WARN] No report found — check FFDC output_dir")
+    print(f"  Report written: {report_path}")
+    retrieved = _public_get_diagnostic_report()
+    if retrieved is None:
+        return
+    print(f"  failure.category : {retrieved['failure']['category']}")
+    print(f"  _report_path     : {retrieved['_report_path']}")
+    if retrieved["_report_path"] != report_path:
+        print("  [WARN] get_diagnostic_report selected a different file")
+    reports.append((category, retrieved))
+    _print_collector_stats(retrieved["collector"])
 
 
 def main():
     print("\n=== FFDC Real Trigger ===\n")
     reports = []
     os.environ.setdefault("TORCH_SPYRE_FFDC", "1")
+    output_dir = _default_output_dir()
+    print(f"FFDC output_dir (_default_output_dir): {output_dir}")
 
     # ── Scenario A: runtime_launch failure ──────────────────────────────────────
     # SpyreSDSCKernelRunner.__init__ calls prepare_kernel(code_dir/spyreCodeDir).
@@ -162,7 +162,7 @@ def main():
                 raise RuntimeError("ffdc launch boom")
 
             kr.launch_jobplan = boom
-            before = _snapshot_reports(_category_pattern("runtime_launch"))
+            before = _snapshot_reports(_category_pattern(output_dir, "runtime_launch"))
             try:
                 runner.run()
             except RuntimeError as e:
@@ -173,7 +173,7 @@ def main():
                 )
             finally:
                 kr.launch_jobplan = orig_launch
-            _record_report(reports, "runtime_launch", before)
+            _record_report(reports, "runtime_launch", before, output_dir)
 
     # ── Scenario B: unimplemented op failure ────────────────────────────────────
     print(
@@ -183,7 +183,7 @@ def main():
         name="test_kernel_fft",
         op="aten::fft_fft",
     )
-    before = _snapshot_reports(_category_pattern("unimplemented"))
+    before = _snapshot_reports(_category_pattern(output_dir, "unimplemented"))
     try:
         urunner.run()
     except RuntimeError as e:
@@ -193,7 +193,7 @@ def main():
             "Expected RuntimeError from urunner.run() but none was raised"
         )
 
-    _record_report(reports, "unimplemented", before)
+    _record_report(reports, "unimplemented", before, output_dir)
 
     # ── Summary ─────────────────────────────────────────────────────────────────
     print("\n=== Captured Report Fields ===")
