@@ -133,37 +133,38 @@ def main():
     os.environ.pop("DUMP_SPYRE_CODE", None)
 
     print("Scenario A: SpyreSDSCKernelRunner.run() → launch_jobplan raises")
-    code_dir = _write_minimal_spyrecode(tempfile.mkdtemp(prefix="ffdc_spyrecode_"))
-    runner = None
-    try:
-        torch.zeros(1, device="spyre")
-        runner = SpyreSDSCKernelRunner(
-            name="test_kernel_add",
-            code_dir=code_dir,
-        )
-    except Exception as e:
-        print(f"  [SKIP] prepare_kernel failed in __init__: {e}")
-        print("  Not claiming runtime_launch (hook is on run(), not __init__).")
-
-    if runner is not None:
-        orig_launch = kr.launch_jobplan
-
-        def boom(*_args, **_kwargs):
-            raise RuntimeError("ffdc launch boom")
-
-        kr.launch_jobplan = boom
-        t0 = time.time()
+    with tempfile.TemporaryDirectory(prefix="ffdc_spyrecode_") as tmp:
+        code_dir = _write_minimal_spyrecode(tmp)
+        runner = None
         try:
-            runner.run()
-        except RuntimeError as e:
-            print(f"  Exception re-raised (expected): {e}")
-        else:
-            raise AssertionError(
-                "Expected RuntimeError from runner.run() but none was raised"
+            torch.zeros(1, device="spyre")
+            runner = SpyreSDSCKernelRunner(
+                name="test_kernel_add",
+                code_dir=code_dir,
             )
-        finally:
-            kr.launch_jobplan = orig_launch
-        _record_report(reports, "runtime_launch", t0)
+        except Exception as e:
+            print(f"  [SKIP] prepare_kernel failed in __init__: {e}")
+            print("  Not claiming runtime_launch (hook is on run(), not __init__).")
+
+        if runner is not None:
+            orig_launch = kr.launch_jobplan
+
+            def boom(*_args, **_kwargs):
+                raise RuntimeError("ffdc launch boom")
+
+            kr.launch_jobplan = boom
+            t0 = time.time()
+            try:
+                runner.run()
+            except RuntimeError as e:
+                print(f"  Exception re-raised (expected): {e}")
+            else:
+                raise AssertionError(
+                    "Expected RuntimeError from runner.run() but none was raised"
+                )
+            finally:
+                kr.launch_jobplan = orig_launch
+            _record_report(reports, "runtime_launch", t0)
 
     # ── Scenario B: unimplemented op failure ────────────────────────────────────
     print(
