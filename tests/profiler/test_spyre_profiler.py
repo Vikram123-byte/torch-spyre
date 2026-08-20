@@ -382,6 +382,8 @@ class TestOverExtendedKernelDurations(TestCase):
         the supplied threshold.
         """
 
+        threshold_us = threshold_ms * 1000
+
         tracked_events = []
 
         for event in events:
@@ -420,7 +422,7 @@ class TestOverExtendedKernelDurations(TestCase):
             tracked_events.append(event)
 
         over_extended = [
-            event for event in tracked_events if event["dur"] > threshold_ms
+            event for event in tracked_events if event["dur"] > threshold_us
         ]
 
         return tracked_events, over_extended
@@ -434,21 +436,21 @@ class TestOverExtendedKernelDurations(TestCase):
                 "cat": "kernel",
                 "name": "short_kernel",
                 "ts": 0,
-                "dur": 500,
+                "dur": 500_000,
             },
             {
                 "ph": "X",
                 "cat": "gpu_memcpy",
                 "name": "long_copy",
                 "ts": 1000,
-                "dur": 1500,
+                "dur": 1_500_000,
             },
             {
                 "ph": "X",
                 "cat": "gpu_memset",
                 "name": "short_memset",
                 "ts": 3000,
-                "dur": 200,
+                "dur": 200_000,
             },
         ]
 
