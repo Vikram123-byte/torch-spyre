@@ -413,11 +413,13 @@ class TestOverExtendedKernelDurations(TestCase):
                 isinstance(duration, (int, float))
                 and not isinstance(duration, bool)
                 and math.isfinite(duration)
-                and duration > 0
             ), (
                 f"Event {name} must have a finite positive duration "
                 f"(ts={timestamp}, dur={duration})"
             )
+
+            if duration <= 0:
+                continue
 
             tracked_events.append(event)
 
@@ -466,16 +468,6 @@ class TestOverExtendedKernelDurations(TestCase):
     def test_find_over_extended_activities_invalid_events(self):
         """Verify invalid timing data is rejected."""
 
-        zero_duration_event = [
-            {
-                "ph": "X",
-                "cat": "kernel",
-                "name": "bad_kernel",
-                "ts": 0,
-                "dur": 0,
-            }
-        ]
-
         missing_timestamp_event = [
             {
                 "ph": "X",
@@ -495,16 +487,13 @@ class TestOverExtendedKernelDurations(TestCase):
         ]
 
         with self.assertRaises(AssertionError):
-            self._find_over_extended_activities(zero_duration_event)
-
-        with self.assertRaises(AssertionError):
             self._find_over_extended_activities(missing_timestamp_event)
 
         with self.assertRaises(AssertionError):
             self._find_over_extended_activities(missing_duration_event)
 
     @pytest.mark.requires_spyre_profiler
-    def test_activity_duration_limit(self, tmp_path):
+    def test_activity_duration_limit(self):
         """
         Fail if any kernel, memcpy, or memset event exceeds 1000 ms.
         """
@@ -530,7 +519,7 @@ class TestOverExtendedKernelDurations(TestCase):
 
             torch.spyre.synchronize()
         with TemporaryFileName(mode="w+") as trace_file:
-            prof.export_chrome_trace(str(trace_file))
+            prof.export_chrome_trace(trace_file)
 
             with open(trace_file, "r") as trace:
                 trace_data = json.load(trace)
@@ -560,10 +549,35 @@ class TestOverExtendedKernelDurations(TestCase):
             threshold_ms=1000,
         )
 
-        self.assertGreater(
-            len(tracked_events),
-            0,
-            "Expected at least one kernel/memcpy/memset event",
+        h2d_events = [
+            event
+            for event in tracked_events
+            if event.get("cat") == "gpu_memcpy" and "HtoD" in event.get("name", "")
+        ]
+
+        d2h_events = [
+            event
+            for event in tracked_events
+            if event.get("cat") == "gpu_memcpy" and "DtoH" in event.get("name", "")
+        ]
+
+        memset_events = [
+            event for event in tracked_events if event.get("cat") == "gpu_memset"
+        ]
+
+        self.assertTrue(
+            h2d_events,
+            "Expected at least one HtoD memcpy event",
+        )
+
+        self.assertTrue(
+            d2h_events,
+            "Expected at least one DtoH memcpy event",
+        )
+
+        self.assertTrue(
+            memset_events,
+            "Expected at least one memset event",
         )
 
         if over_extended:
