@@ -509,8 +509,6 @@ class TestOverExtendedKernelDurations(TestCase):
         Fail if any kernel, memcpy, or memset event exceeds 1000 ms.
         """
 
-        trace_file = tmp_path / "activity_duration_trace.json"
-
         cpu_src = torch.randn(64, 64, dtype=torch.float16)
 
         with profile(
@@ -531,16 +529,11 @@ class TestOverExtendedKernelDurations(TestCase):
             _ = result.cpu()  # D2H memcpy
 
             torch.spyre.synchronize()
+        with TemporaryFileName(mode="w+") as trace_file:
+            prof.export_chrome_trace(str(trace_file))
 
-        prof.export_chrome_trace(str(trace_file))
-
-        self.assertTrue(
-            trace_file.exists(),
-            "Chrome trace file was not created",
-        )
-
-        with trace_file.open("r", encoding="utf-8") as trace:
-            trace_data = json.load(trace)
+            with open(trace_file, "r") as trace:
+                trace_data = json.load(trace)
 
         self.assertIsInstance(
             trace_data,
