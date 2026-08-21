@@ -405,7 +405,7 @@ class TestOverExtendedKernelDurations(TestCase):
                 and not isinstance(timestamp, bool)
                 and math.isfinite(timestamp)
             ), (
-                f"Event {name} must have a finite numeric tiestamp "
+                f"Event {name} must have a finite numeric timestamp "
                 f"(ts={timestamp}, dur={duration})"
             )
 
