@@ -24,7 +24,7 @@ from torch.testing._internal.common_utils import (
     TemporaryFileName,
     TestCase,
 )
-
+from torch_spyre.constants import DEVICE_NAME
 
 Test_spyre = None
 if hasattr(torch, "spyre"):
@@ -414,12 +414,9 @@ class TestOverExtendedKernelDurations(TestCase):
                 and not isinstance(duration, bool)
                 and math.isfinite(duration)
             ), (
-                f"Event {name} must have a finite positive duration "
+                f"Event {name} must have a finite numeric duration "
                 f"(ts={timestamp}, dur={duration})"
             )
-
-            if duration <= 0:
-                continue
 
             tracked_events.append(event)
 
@@ -436,9 +433,9 @@ class TestOverExtendedKernelDurations(TestCase):
             {
                 "ph": "X",
                 "cat": "kernel",
-                "name": "short_kernel",
+                "name": "long_kernel",
                 "ts": 0,
-                "dur": 500_000,
+                "dur": 1_200_000,
             },
             {
                 "ph": "X",
@@ -462,8 +459,12 @@ class TestOverExtendedKernelDurations(TestCase):
         )
 
         self.assertEqual(len(tracked_events), 3)
-        self.assertEqual(len(over_extended), 1)
-        self.assertEqual(over_extended[0]["name"], "long_copy")
+        self.assertEqual(len(over_extended), 2)
+
+        names = {event["name"] for event in over_extended}
+
+        self.assertIn("long_kernel", names)
+        self.assertIn("long_copy", names)
 
     def test_find_over_extended_activities_invalid_events(self):
         """Verify invalid timing data is rejected."""
@@ -503,7 +504,7 @@ class TestOverExtendedKernelDurations(TestCase):
         with profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]
         ) as prof:
-            device_tensor = cpu_src.to("spyre")  # H2D memcpy
+            device_tensor = cpu_src.to(DEVICE_NAME)  # H2D memcpy
 
             result = torch.matmul(device_tensor, device_tensor)
             result = F.gelu(result)
@@ -512,7 +513,7 @@ class TestOverExtendedKernelDurations(TestCase):
                 64,
                 64,
                 dtype=torch.float16,
-                device="spyre",
+                device=DEVICE_NAME,
             )  # memset
 
             _ = result.cpu()  # D2H memcpy
@@ -538,31 +539,26 @@ class TestOverExtendedKernelDurations(TestCase):
 
         trace_events = trace_data["traceEvents"]
 
-        self.assertIsInstance(
-            trace_events,
-            list,
-            "'traceEvents' must contain a list",
-        )
-
-        tracked_events, over_extended = self._find_over_extended_activities(
-            trace_events,
-            threshold_ms=1000,
-        )
-
         h2d_events = [
             event
-            for event in tracked_events
+            for event in trace_events
             if event.get("cat") == "gpu_memcpy" and "HtoD" in event.get("name", "")
         ]
 
         d2h_events = [
             event
-            for event in tracked_events
+            for event in trace_events
             if event.get("cat") == "gpu_memcpy" and "DtoH" in event.get("name", "")
         ]
 
         memset_events = [
-            event for event in tracked_events if event.get("cat") == "gpu_memset"
+            event for event in trace_events if event.get("cat") == "gpu_memset"
+        ]
+
+        kernel_events = [
+            event
+            for event in trace_events
+            if event.get("cat") == "kernel" and event.get("ph") == "X"
         ]
 
         self.assertTrue(
@@ -578,6 +574,22 @@ class TestOverExtendedKernelDurations(TestCase):
         self.assertTrue(
             memset_events,
             "Expected at least one memset event",
+        )
+
+        self.assertIsInstance(
+            trace_events,
+            list,
+            "'traceEvents' must contain a list",
+        )
+
+        self.assertTrue(
+            kernel_events,
+            "Expected at least one kernel event",
+        )
+
+        tracked_events, over_extended = self._find_over_extended_activities(
+            trace_events,
+            threshold_ms=1000,
         )
 
         if over_extended:
