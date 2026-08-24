@@ -22,28 +22,32 @@ hardware state and compiler artifacts.
 
 Run from repo root with:
     TORCH_SPYRE_FFDC=1 TORCH_COMPILE_DEBUG=1 python3 tools/ffdc_trigger.py
+
+When ``TORCHINDUCTOR_CACHE_DIR`` is unset, this tool creates an isolated
+temp dir (``ffdc_inductor_cache_*``) so reports do not land in the shared
+cache. That dir is left on disk so a later interpreter can export the
+printed ``TORCHINDUCTOR_CACHE_DIR`` and call
+``torch.spyre.get_diagnostic_report()``. Delete it yourself when finished.
 """
 
-import atexit
 import glob
 import json
 import os
 import shlex
-import shutil
 import tempfile
-from typing import Any
-
 from pathlib import Path
+from typing import Any
 
 # ``cache_dir()`` assigns ``TORCHINDUCTOR_CACHE_DIR`` when unset. Do that
 # into an isolated tree *before* ``import torch`` (autoload → fallbacks).
+_auto_cache_dir: str | None = None
 if "TORCHINDUCTOR_CACHE_DIR" not in os.environ:
     _auto_cache_dir = tempfile.mkdtemp(prefix="ffdc_inductor_cache_")
     os.environ["TORCHINDUCTOR_CACHE_DIR"] = _auto_cache_dir
-    atexit.register(shutil.rmtree, _auto_cache_dir, ignore_errors=True)
 
 import torch  # noqa: E402
 
+from torch_spyre.constants import DEVICE_NAME  # noqa: E402
 from torch_spyre.execution import kernel_runner as kr  # noqa: E402
 from torch_spyre.execution.kernel_runner import (  # noqa: E402
     SpyreSDSCKernelRunner,
@@ -114,21 +118,17 @@ def _record_report(reports, category: str, before: set[str], output_dir: Path) -
         return
     print(f"  Report written: {report_path}")
     if not hasattr(torch, "spyre") or not hasattr(torch.spyre, "get_diagnostic_report"):
-        print("  torch.spyre.get_diagnostic_report is not bound")
-        return
+        raise SystemExit("torch.spyre.get_diagnostic_report is not bound")
     print("  using torch.spyre.get_diagnostic_report()")
     retrieved = torch.spyre.get_diagnostic_report()
     if retrieved is None:
-        print("  [WARN] get_diagnostic_report returned None")
-        return
+        raise SystemExit("get_diagnostic_report returned None")
     print(f"  failure.category : {retrieved['failure']['category']}")
     print(f"  _report_path     : {retrieved['_report_path']}")
     if Path(retrieved["_report_path"]).resolve() != Path(report_path).resolve():
-        print("  [WARN] get_diagnostic_report selected a different file")
-        return
+        raise SystemExit("get_diagnostic_report selected a different file")
     if retrieved["failure"]["category"] != category:
-        print("  [WARN] retrieved category does not match this scenario")
-        return
+        raise SystemExit("retrieved category does not match this scenario")
     reports.append((category, retrieved))
     _print_collector_stats(retrieved["collector"])
 
@@ -142,6 +142,10 @@ def main():
         "export TORCHINDUCTOR_CACHE_DIR="
         + shlex.quote(os.environ.get("TORCHINDUCTOR_CACHE_DIR") or "")
     )
+    if _auto_cache_dir is not None:
+        print(
+            "Isolated TORCHINDUCTOR_CACHE_DIR is left on disk; delete it when finished."
+        )
     print(f"FFDC output_dir: {output_dir}")
 
     # Survive prepare_kernel in __init__, then fail in run() / launch_jobplan.
@@ -152,7 +156,7 @@ def main():
         code_dir = _write_minimal_spyrecode(tmp)
         runner = None
         try:
-            torch.zeros(1, device="spyre")
+            torch.zeros(1, device=DEVICE_NAME)
             runner = SpyreSDSCKernelRunner(
                 name="test_kernel_add",
                 code_dir=code_dir,

@@ -19,8 +19,10 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import torch
 
 from torch_spyre import make_spyre_module  # type: ignore[attr-defined]
+from torch_spyre.constants import DEVICE_NAME
 from torch_spyre.profiler import get_diagnostic_report as profiler_get_diagnostic_report
 from torch_spyre.profiler._ffdc import (
     CATEGORY_COMPILE_BACKEND,
@@ -166,8 +168,6 @@ def _write_isolated_ffdc_report(
 
 def _retrieve_via_torch_spyre(expected_category: str, report_path, match: str):
     """No-arg ``torch.spyre.get_diagnostic_report`` must return this report."""
-    import torch
-
     assert hasattr(torch, "spyre") and hasattr(torch.spyre, "get_diagnostic_report"), (
         "torch.spyre.get_diagnostic_report is not bound"
     )
@@ -1075,6 +1075,11 @@ class TestFfdcKernelRunner:
                 launch_jobplan=_launch,
                 prepare_kernel=lambda path: "fake_jobplan",
                 register_kernel_provenance=lambda *a, **k: True,
+                SymbolicArg=object,
+            )
+        elif not hasattr(sys.modules["torch_spyre._C"], "SymbolicArg"):
+            monkeypatch.setattr(
+                sys.modules["torch_spyre._C"], "SymbolicArg", object, raising=False
             )
         if "torch_spyre._inductor" not in sys.modules:
             inductor = _stub_module(monkeypatch, "torch_spyre._inductor")
@@ -1146,10 +1151,8 @@ class TestFfdcKernelRunner:
         self, monkeypatch, tmp_path
     ):
         """``run()`` / ``launch_jobplan`` after a successful ``prepare_kernel``."""
-        import torch
-
         try:
-            torch.zeros(1, device="spyre")
+            torch.zeros(1, device=DEVICE_NAME)
         except (ImportError, RuntimeError):
             pytest.skip("requires Spyre hardware")
         from test_prepare_kernel import TestPrepareKernel as tpk

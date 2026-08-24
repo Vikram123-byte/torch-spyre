@@ -212,6 +212,8 @@ The tool prints `export TORCHINDUCTOR_CACHE_DIR=...`. A new interpreter
 does not inherit that isolated cache unless you export it (otherwise
 `cache_dir()` assigns the default shared cache and
 `get_diagnostic_report()` will miss the reports this run just wrote).
+If the tool created the isolated dir, it is left on disk; delete it
+when finished.
 
 Print the exact report path that `get_diagnostic_report()` would return:
 
