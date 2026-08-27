@@ -19,7 +19,6 @@ import unittest
 
 import pytest
 import torch
-import math
 import torch.nn.functional as F
 from torch.profiler import ProfilerActivity, _memory_profiler, profile
 from torch.testing._internal.common_utils import (
@@ -756,6 +755,8 @@ class TestOverExtendedKernelDurations(TestCase):
                 f"{len(over_extended)} tracked event(s) exceeded 1000 ms:\n"
                 + "\n".join(details)
             )
+
+
 def _find_device_overlaps(events):
     """Return valid positive-duration Spyre device events and overlapping event pairs."""
     device_events = []
