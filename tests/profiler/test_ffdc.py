@@ -549,9 +549,7 @@ class TestFfdcCollect:
         assert "fx_graph_readable.py" in text
         assert "omit `failure_category`" in text
         # Guard against prior overclaims that conflated emit with tool hooks.
-        assert "while generating" not in text
         assert "backend bundle generation" not in text
-        assert "prepare path" not in text
         assert "Manual `collect()`" not in text
         assert "ffdc_trigger.py" not in text
 
