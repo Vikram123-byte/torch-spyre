@@ -212,8 +212,7 @@ The tool prints `export TORCHINDUCTOR_CACHE_DIR=...`. A new interpreter
 does not inherit that isolated cache unless you export it (otherwise
 `cache_dir()` assigns the default shared cache and
 `get_diagnostic_report()` will miss the reports this run just wrote).
-If the tool created the isolated dir, it is left on disk; delete it
-when finished.
+If the tool created the isolated dir, it is left on disk.
 
 Print the exact report path that `get_diagnostic_report()` would return:
 
@@ -227,6 +226,10 @@ report = torch.spyre.get_diagnostic_report()
 print(report["_report_path"] if report is not None else "No FFDC report found")
 PY
 ```
+
+The tool also prints a commented `rm -rf <dir>` for an auto-created
+cache. Uncomment and run it **after** retrieve (the reports live under
+that tree).
 
 Copy it to your laptop (replace `<pod>` and use the exact path printed above —
 the filename's category prefix depends on which hook fired:

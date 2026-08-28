@@ -1060,6 +1060,8 @@ class TestFfdcKernelRunner:
 
         Prefer patching the module's bound ``launch_jobplan`` / ``prepare_kernel``.
         Stub ``_C`` only when it is absent (e.g. no extension on Mac).
+        Do not invent ``SymbolicArg`` on a present ``_C`` — that import must
+        fail if the extension is loaded without the type.
         """
         import logging
         import sys
@@ -1076,10 +1078,6 @@ class TestFfdcKernelRunner:
                 prepare_kernel=lambda path: "fake_jobplan",
                 register_kernel_provenance=lambda *a, **k: True,
                 SymbolicArg=object,
-            )
-        elif not hasattr(sys.modules["torch_spyre._C"], "SymbolicArg"):
-            monkeypatch.setattr(
-                sys.modules["torch_spyre._C"], "SymbolicArg", object, raising=False
             )
         if "torch_spyre._inductor" not in sys.modules:
             inductor = _stub_module(monkeypatch, "torch_spyre._inductor")

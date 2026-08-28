@@ -27,7 +27,8 @@ When ``TORCHINDUCTOR_CACHE_DIR`` is unset, this tool creates an isolated
 temp dir (``ffdc_inductor_cache_*``) so reports do not land in the shared
 cache. That dir is left on disk so a later interpreter can export the
 printed ``TORCHINDUCTOR_CACHE_DIR`` and call
-``torch.spyre.get_diagnostic_report()``. Delete it yourself when finished.
+``torch.spyre.get_diagnostic_report()``. It also prints a commented
+``rm -rf <dir>`` to run only after that later retrieve.
 """
 
 import glob
@@ -37,6 +38,7 @@ import shlex
 import tempfile
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 # ``cache_dir()`` assigns ``TORCHINDUCTOR_CACHE_DIR`` when unset. Do that
 # into an isolated tree *before* ``import torch`` (autoload → fallbacks).
@@ -133,6 +135,13 @@ def _record_report(reports, category: str, before: set[str], output_dir: Path) -
     _print_collector_stats(retrieved["collector"])
 
 
+def _print_isolated_cleanup() -> None:
+    if _auto_cache_dir is None:
+        return
+    print("\n# After a new interpreter has retrieved the report:")
+    print("# rm -rf " + shlex.quote(_auto_cache_dir))
+
+
 def main():
     print("\n=== FFDC Real Trigger ===\n")
     reports = []
@@ -143,11 +152,16 @@ def main():
         + shlex.quote(os.environ.get("TORCHINDUCTOR_CACHE_DIR") or "")
     )
     if _auto_cache_dir is not None:
-        print(
-            "Isolated TORCHINDUCTOR_CACHE_DIR is left on disk; delete it when finished."
-        )
+        print("Isolated TORCHINDUCTOR_CACHE_DIR is left on disk.")
     print(f"FFDC output_dir: {output_dir}")
 
+    try:
+        _run_scenarios(reports, output_dir)
+    finally:
+        _print_isolated_cleanup()
+
+
+def _run_scenarios(reports, output_dir: Path) -> None:
     # Survive prepare_kernel in __init__, then fail in run() / launch_jobplan.
     os.environ.pop("DUMP_SPYRE_CODE", None)
 
@@ -165,23 +179,20 @@ def main():
             print(f"  [SKIP] prepare_kernel failed in __init__: {e}")
 
         if runner is not None:
-            orig_launch = kr.launch_jobplan
 
             def boom(*_args, **_kwargs):
                 raise RuntimeError("ffdc launch boom")
 
-            kr.launch_jobplan = boom
             before = set(glob.glob(_category_pattern(output_dir, "runtime_launch")))
-            try:
-                runner.run()
-            except RuntimeError as e:
-                print(f"  Exception re-raised (expected): {e}")
-            else:
-                raise AssertionError(
-                    "Expected RuntimeError from runner.run() but none was raised"
-                )
-            finally:
-                kr.launch_jobplan = orig_launch
+            with patch.object(kr, "launch_jobplan", boom):
+                try:
+                    runner.run()
+                except RuntimeError as e:
+                    print(f"  Exception re-raised (expected): {e}")
+                else:
+                    raise AssertionError(
+                        "Expected RuntimeError from runner.run() but none was raised"
+                    )
             _record_report(reports, "runtime_launch", before, output_dir)
 
     # ── Scenario B: unimplemented op failure ────────────────────────────────────
