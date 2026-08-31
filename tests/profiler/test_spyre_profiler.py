@@ -519,6 +519,13 @@ class TestMemoryProfilerTimeline(TestCase):
 
 
 class TestOverExtendedKernelDurations(TestCase):
+    """Fail if kernel, H2D/D2H memcpy, or memset events exceed 1000 ms.
+
+    Chrome complete-event ``dur`` is microseconds, so 1000 ms is
+    1_000_000. That fixed threshold is the #3542 contract. Cost-model
+    thresholds and TS1-TS5 effective-frequency checks are follow-ups.
+    """
+
     ACTIVITY_TYPES = {
         "kernel",
         "gpu_memcpy",
@@ -527,8 +534,10 @@ class TestOverExtendedKernelDurations(TestCase):
 
     def _find_over_extended_activities(self, events, threshold_ms=1000):
         """
-        Return valid tracked events and any whose duration exceeds
-        the supplied threshold.
+        Return tracked events and any whose duration exceeds threshold_ms.
+
+        Missing or non-finite ``ts``/``dur`` fail. Non-positive ``dur`` is
+        legal (instant mem ops) and is not treated as over-extended.
         """
 
         threshold_us = threshold_ms * 1000
@@ -600,6 +609,13 @@ class TestOverExtendedKernelDurations(TestCase):
                 "ts": 3000,
                 "dur": 200_000,
             },
+            {
+                "ph": "X",
+                "cat": "gpu_memcpy",
+                "name": "instant_copy",
+                "ts": 4000,
+                "dur": 0,
+            },
         ]
 
         tracked_events, over_extended = self._find_over_extended_activities(
@@ -607,13 +623,14 @@ class TestOverExtendedKernelDurations(TestCase):
             threshold_ms=1000,
         )
 
-        self.assertEqual(len(tracked_events), 3)
+        self.assertEqual(len(tracked_events), 4)
         self.assertEqual(len(over_extended), 2)
 
         names = {event["name"] for event in over_extended}
 
         self.assertIn("long_kernel", names)
         self.assertIn("long_copy", names)
+        self.assertNotIn("instant_copy", names)
 
     def test_find_over_extended_activities_invalid_events(self):
         """Verify invalid timing data is rejected."""
@@ -642,11 +659,25 @@ class TestOverExtendedKernelDurations(TestCase):
         with self.assertRaises(AssertionError):
             self._find_over_extended_activities(missing_duration_event)
 
+    @skipIfTorchDynamo("profiler gets ignored if dynamo activated")
     @pytest.mark.requires_spyre_profiler
     def test_activity_duration_limit(self):
         """
         Fail if any kernel, memcpy, or memset event exceeds 1000 ms.
+
+        Eager matmul/gelu is not enough to prove a chrome ``cat==kernel``
+        event. Compile the stick-aligned MLP used by the provenance test,
+        warmup outside ``profile()``, then capture H2D, the compiled
+        kernel, memset, and D2H in one trace.
         """
+
+        torch._dynamo.reset()
+        model = _ProfilerMLP().half().to(DEVICE_NAME).eval()
+        compiled_input = torch.randn(2, 128, dtype=torch.float16, device=DEVICE_NAME)
+        compiled = torch.compile(model, fullgraph=True)
+        with torch.no_grad():
+            compiled(compiled_input)
+            torch.spyre.synchronize()
 
         cpu_src = torch.randn(64, 64, dtype=torch.float16)
 
@@ -655,8 +686,8 @@ class TestOverExtendedKernelDurations(TestCase):
         ) as prof:
             device_tensor = cpu_src.to(DEVICE_NAME)  # H2D memcpy
 
-            result = torch.matmul(device_tensor, device_tensor)
-            result = F.gelu(result)
+            with torch.no_grad():
+                compiled_out = compiled(compiled_input)
 
             _ = torch.zeros(
                 64,
@@ -665,7 +696,8 @@ class TestOverExtendedKernelDurations(TestCase):
                 device=DEVICE_NAME,
             )  # memset
 
-            _ = result.cpu()  # D2H memcpy
+            _ = device_tensor.cpu()  # D2H memcpy
+            _ = compiled_out.cpu()
 
             torch.spyre.synchronize()
         with TemporaryFileName(mode="w+") as trace_file:
