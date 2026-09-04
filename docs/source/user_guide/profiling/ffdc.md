@@ -319,10 +319,11 @@ cd /dev/shm/workdir/torch-spyre
 TORCH_SPYRE_FFDC=1 TORCH_COMPILE_DEBUG=1 python your_script.py
 ```
 
-Runtime hooks fire from `SpyreSDSCKernelRunner.run` (`launch_jobplan`) and
-`SpyreUnimplementedRunner.run`. A fake `code_dir` that fails in
-`prepare_kernel` (`__init__`) is **not** `runtime_launch` and will not
-write that category.
+To exercise runtime hooks on hardware without a full model failure:
+
+```bash
+TORCH_SPYRE_FFDC=1 TORCH_COMPILE_DEBUG=1 python tools/ffdc_trigger.py
+```
 
 Print the exact report path that `get_diagnostic_report()` would return:
 

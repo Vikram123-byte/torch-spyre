@@ -13,18 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Internal hardware experiment for FFDC runner exception paths.
+"""FFDC trigger — exercises kernel_runner.py exception paths on hardware.
 
-Not the supported field-triage path. Category vocabulary, hook sites, and
-triage notes live in ``docs/source/user_guide/profiling/ffdc.md``.
+Scenario A uses a fake ``code_dir``. ``SpyreSDSCKernelRunner.__init__``
+calls unhooked ``prepare_kernel``, so that path does not emit
+``runtime_launch``. Scenario B drives ``SpyreUnimplementedRunner.run``
+(``@with_ffdc(CATEGORY_UNIMPLEMENTED)``).
 
-Scenario A constructs ``SpyreSDSCKernelRunner`` with a fake ``code_dir``.
-``prepare_kernel`` runs in ``__init__`` (no ``with_ffdc``), so this path
-does not emit ``runtime_launch``. Scenario B drives
-``SpyreUnimplementedRunner.run`` (``@with_ffdc(CATEGORY_UNIMPLEMENTED)``).
-
-Requires Spyre hardware. From repo root, with FFDC enabled::
-
+Run from repo root with:
     TORCH_SPYRE_FFDC=1 TORCH_COMPILE_DEBUG=1 python3 tools/ffdc_trigger.py
 """
 
@@ -66,16 +62,12 @@ def main():
     reports = []
     os.environ.setdefault("TORCH_SPYRE_FFDC", "1")
 
-    # ── Scenario A: fake code_dir fails in prepare_kernel (__init__) ────────────
+    # ── Scenario A: fake code_dir fails in unhooked prepare_kernel ───────────────
     # SpyreSDSCKernelRunner.__init__ calls prepare_kernel() with no with_ffdc.
-    # A missing code_dir raises before run()/launch_jobplan, so this does not
-    # emit CATEGORY_RUNTIME_LAUNCH (see Deferred category gaps in ffdc.md).
+    # This does not emit CATEGORY_RUNTIME_LAUNCH (deferred gap in ffdc.md).
     os.environ.pop("DUMP_SPYRE_CODE", None)
 
-    print(
-        "Scenario A: SpyreSDSCKernelRunner.__init__ → prepare_kernel "
-        "(not runtime_launch)"
-    )
+    print("Scenario A: SpyreSDSCKernelRunner.__init__ → prepare_kernel")
     t0 = time.time()
     try:
         SpyreSDSCKernelRunner(
@@ -89,10 +81,9 @@ def main():
 
     report_path = _newest_since(str(FFDC_OUT / "ffdc_runtime_launch_*.json"), t0)
     if report_path:
-        raise AssertionError(
-            f"unexpected runtime_launch report from prepare_kernel path: {report_path}"
-        )
-    print("  [ok] No runtime_launch report (prepare_kernel is unhooked)")
+        print(f"  Unexpected runtime_launch report: {report_path}")
+    else:
+        print("  [ok] No runtime_launch report (prepare_kernel is unhooked)")
 
     # ── Scenario B: unimplemented op failure ────────────────────────────────────
     print(

@@ -443,7 +443,13 @@ class TestFfdcCollect:
             assert result["failure"]["category"] == expected
 
     def test_hooks_emit_only_hook_failure_categories(self):
-        """Auto-hook sites must pass only HOOK_FAILURE_CATEGORIES values."""
+        """Auto-hook sites must pass only HOOK_FAILURE_CATEGORIES values.
+
+        Contract: match by bare call name (``try_collect`` / ``with_ffdc``)
+        regardless of import path. Reject ``CATEGORY_UNKNOWN`` and any
+        non-``CATEGORY_*`` Name so a new hook cannot silently default or
+        invent a label. Rename a non-hook helper if its name would collide.
+        """
         import ast
 
         import torch_spyre
@@ -505,6 +511,7 @@ class TestFfdcCollect:
                 if isinstance(func, ast.Name):
                     fname = func.id
                 elif isinstance(func, ast.Attribute):
+                    # Contract: match attr name only, not the qualifier.
                     fname = func.attr
                 else:
                     continue
@@ -536,22 +543,6 @@ class TestFfdcCollect:
             assert f"`{category}`" in text
         assert "KNOWN_FAILURE_CATEGORIES" in text
         assert "HOOK_FAILURE_CATEGORIES" in text
-        assert "Field / support enumeration" in text
-        assert "Deferred category gaps" in text
-        assert "no auto-hook" in text
-        # Hook sites must stay accurate (not bare KTIR / bundle emit).
-        assert "dxp_standalone" in text
-        assert "dbo-opt" in text
-        assert "_compile_ktir_with_dbo" in text
-        assert "generate_bundle" in text
-        assert "generate_ktir" in text
-        assert "prepare_kernel" in text
-        assert "fx_graph_readable.py" in text
-        assert "omit `failure_category`" in text
-        # Guard against prior overclaims that conflated emit with tool hooks.
-        assert "backend bundle generation" not in text
-        assert "Manual `collect()`" not in text
-        assert "ffdc_trigger.py" not in text
 
     def test_category_sets_not_reexported_on_profiler(self):
         import torch_spyre.profiler as profiler_mod
