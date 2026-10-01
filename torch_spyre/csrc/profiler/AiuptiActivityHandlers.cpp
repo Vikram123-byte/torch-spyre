@@ -17,8 +17,10 @@
  */
 #include <libaiupti/aiupti_runtime_cbid.h>
 
+#include <cstring>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -27,6 +29,65 @@
 #include "kernel_provenance_registry.h"
 
 namespace KINETO_NAMESPACE {
+
+namespace {
+
+// AIUpti_ActivityCompute::name is an inline char[128]. flex/AIUPTI must
+// strncpy the kernel label into it. A live bug still writes an 8-byte host
+// pointer (+ NULs) instead — chrome-trace then shows "unknown", but
+// prof.events() -> evt.name() does a strict UTF-8 decode and throws
+// UnicodeDecodeError (nightly perf suite). Bound + validate before handing
+// the bytes to Kineto so one bad record cannot abort the whole parse.
+// Real fix remains in flex: copy label *characters* into name[], not a
+// pointer. See torch-spyre#4991 / libaiupti#114 notes.
+inline bool isValidUtf8(std::string_view s) {
+  const auto* p = reinterpret_cast<const unsigned char*>(s.data());
+  const auto* end = p + s.size();
+  while (p < end) {
+    if (*p < 0x80) {
+      ++p;
+      continue;
+    }
+    int need = 0;
+    if ((*p & 0xE0) == 0xC0) {
+      need = 1;
+      if ((*p & 0xFE) == 0xC0) return false;  // overlong
+    } else if ((*p & 0xF0) == 0xE0) {
+      need = 2;
+    } else if ((*p & 0xF8) == 0xF0) {
+      need = 3;
+      if (*p > 0xF4) return false;
+    } else {
+      return false;
+    }
+    ++p;
+    for (int i = 0; i < need; ++i) {
+      if (p >= end || (*p & 0xC0) != 0x80) return false;
+      ++p;
+    }
+  }
+  return true;
+}
+
+inline std::string sanitizedActivityName(const char* name, size_t cap = 128) {
+  const size_t n = strnlen(name, cap);
+  std::string_view sv(name, n);
+  if (sv.empty() || !isValidUtf8(sv)) {
+    return "unknown";
+  }
+  // Reject mostly-binary labels (e.g. LE pointer bytes that happen to be
+  // lonely valid UTF-8 code units like 0x41 'A').
+  size_t printable = 0;
+  for (unsigned char c : sv) {
+    if (c >= 0x20 && c < 0x7F) ++printable;
+  }
+  if (printable * 2 < sv.size()) {
+    return "unknown";
+  }
+  return std::string(sv);
+}
+
+}  // namespace
 
 // =========== Session Private Methods ============= //
 void AiuptiActivityProfilerSession::removeCorrelatedPtiActivities(
@@ -331,9 +392,10 @@ void AiuptiActivityProfilerSession::handleKernelActivity(
   cpuCorrelationMap_[activity->correlation_id] = 0;  // fake add correlation
   const libkineto::ITraceActivity* linked =
       linkedActivity(activity->correlation_id, cpuCorrelationMap_);
+  const std::string kernel_name = sanitizedActivityName(activity->name);
   traceBuffer_.emplace_activity(traceBuffer_.span,
                                 libkineto::ActivityType::CONCURRENT_KERNEL,
-                                activity->name);
+                                kernel_name);
   auto& kernel_activity = traceBuffer_.activities.back();
   kernel_activity->startTime = activity->start;
   kernel_activity->endTime = activity->end;
@@ -352,7 +414,7 @@ void AiuptiActivityProfilerSession::handleKernelActivity(
   kernel_activity->addMetadataQuoted("context",
                                      std::to_string(activity->context_id));
   kernel_activity->addMetadata("correlation", activity->correlation_id);
-  if (const auto key = spyre::extractKernelProvenanceKey(activity->name)) {
+  if (const auto key = spyre::extractKernelProvenanceKey(kernel_name)) {
     kernel_activity->addMetadataQuoted("provenance_key", *key);
     if (const auto ids = spyre::lookupKernelProvenance(*key)) {
       kernel_activity->addMetadata("debug_handles",
