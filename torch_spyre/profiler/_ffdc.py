@@ -59,7 +59,17 @@ _FutureTimeoutError = TimeoutError
 
 # Failure category constants. The category also encodes where the hook
 # fired: frontend compiler, backend tool (dbo-opt), or runtime.
-# Keep in sync with docs/source/user_guide/profiling/ffdc.md.
+#
+# Bookkeeping (intentional for a small, stable vocabulary):
+# * Known (preferred) category: add/rename CATEGORY_* +
+#   KNOWN_FAILURE_CATEGORIES, and document it in
+#   docs/source/user_guide/profiling/ffdc.md (including the category
+#   table). test_ffdc_docs_list_known_failure_categories only checks
+#   document-wide backtick mentions, not table rows.
+# * Hook-emitted category: also add/rename in HOOK_FAILURE_CATEGORIES
+#   and the name_to_value map in tests/profiler/test_ffdc.py (AST
+#   inventory). Capture-time-only labels (e.g. CATEGORY_UNKNOWN) stay
+#   out of the hook set and map.
 CATEGORY_COMPILE_FRONTEND = "compile_frontend"
 CATEGORY_COMPILE_BACKEND = "compile_backend"
 CATEGORY_RUNTIME_LAUNCH = "runtime_launch"
@@ -69,7 +79,7 @@ CATEGORY_UNKNOWN = "unknown"
 # Labels auto-hooks write today (excludes CATEGORY_UNKNOWN).
 # Preferred vocabulary for docs/hooks only — collect() does not enforce
 # membership; non-empty custom labels are still stripped and stored
-# (not an allowlist).
+# (not an allowlist). Locked by test_hooks_emit_only_hook_failure_categories.
 HOOK_FAILURE_CATEGORIES = frozenset(
     {
         CATEGORY_COMPILE_FRONTEND,

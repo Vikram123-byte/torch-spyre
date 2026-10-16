@@ -445,10 +445,31 @@ class TestFfdcCollect:
     def test_hooks_emit_only_hook_failure_categories(self):
         """Auto-hook sites must pass only HOOK_FAILURE_CATEGORIES values.
 
-        Contract: match by bare call name (``try_collect`` / ``with_ffdc``)
-        regardless of import path. Reject ``CATEGORY_UNKNOWN`` and any
-        non-``CATEGORY_*`` Name so a new hook cannot silently default or
-        invent a label. Rename a non-hook helper if its name would collide.
+        Full contract (intentional — not accidental strictness):
+
+        * Match by **bare** call name (``try_collect`` / ``with_ffdc``),
+          regardless of qualifier (attr-only). Rename a non-hook helper
+          if its name would collide; a qualifier allowlist is a possible
+          follow-up if false positives appear.
+        * ``try_collect`` must pass ``failure_category=`` as a **keyword**
+          (positional rejected — the default would be
+          ``CATEGORY_UNKNOWN``).
+        * ``with_ffdc`` may use positional or keyword.
+        * Category arg must be an ``ast.Name`` of a ``CATEGORY_*``
+          constant in ``HOOK_FAILURE_CATEGORIES`` (rejects aliases /
+          variables / ``CATEGORY_UNKNOWN``).
+        * ``emitted == HOOK_FAILURE_CATEGORIES``: every hook label must
+          be actively emitted somewhere in the installed package (CI
+          scans site-packages after the wheel install).
+
+        Maintenance: a known (preferred) category needs
+        ``CATEGORY_*`` + ``KNOWN_FAILURE_CATEGORIES`` in ``_ffdc.py``
+        and a mention in ``docs/source/user_guide/profiling/ffdc.md``
+        (``test_ffdc_docs_list_known_failure_categories`` checks
+        document-wide backtick mentions, not table rows). Update
+        ``HOOK_FAILURE_CATEGORIES`` and this ``name_to_value`` map only
+        when the label is hook-emitted; capture-time-only labels
+        (e.g. ``CATEGORY_UNKNOWN``) stay out of both.
         """
         import ast
 
@@ -459,6 +480,7 @@ class TestFfdcCollect:
         # importable package location instead of Path(__file__)/../torch_spyre.
         package_root = Path(torch_spyre.__file__).resolve().parent
         # Only hook labels — CATEGORY_UNKNOWN must not appear at auto-hook sites.
+        # Keep keys in sync with HOOK_FAILURE_CATEGORIES in _ffdc.py.
         name_to_value = {
             "CATEGORY_COMPILE_FRONTEND": CATEGORY_COMPILE_FRONTEND,
             "CATEGORY_COMPILE_BACKEND": CATEGORY_COMPILE_BACKEND,
@@ -478,6 +500,9 @@ class TestFfdcCollect:
             if cat_kw is not None:
                 cat_node = cat_kw.value
             elif require_keyword:
+                # try_collect defaults failure_category to CATEGORY_UNKNOWN;
+                # requiring the keyword keeps hooks from silently falling
+                # into capture-time unknown.
                 raise AssertionError(
                     f"{path}:{call.lineno}: try_collect must pass "
                     f"failure_category=CATEGORY_* (default would be "
@@ -490,6 +515,8 @@ class TestFfdcCollect:
                     f"{path}:{call.lineno}: with_ffdc must pass a CATEGORY_* "
                     f"positional arg or failure_category= keyword"
                 )
+            # Reject aliases / variables / Attribute forms so the inventory
+            # stays a literal CATEGORY_* name, not a runtime expression.
             assert isinstance(cat_node, ast.Name), (
                 f"{path}:{call.lineno}: failure_category must use "
                 f"CATEGORY_* constant, got {ast.dump(cat_node)}"
@@ -511,7 +538,8 @@ class TestFfdcCollect:
                 if isinstance(func, ast.Name):
                     fname = func.id
                 elif isinstance(func, ast.Attribute):
-                    # Contract: match attr name only, not the qualifier.
+                    # Intentional: match attr name only, not the qualifier,
+                    # so import style cannot hide a hook call site.
                     fname = func.attr
                 else:
                     continue
@@ -524,12 +552,19 @@ class TestFfdcCollect:
                         _hook_category_name(node, path=path, require_keyword=False)
                     )
 
+        # Every HOOK_FAILURE_CATEGORIES label must be live somewhere; an
+        # unused preferred label is treated as dead vocabulary.
         assert emitted == HOOK_FAILURE_CATEGORIES, (
             f"hook inventory from {package_root} was {emitted!r}, "
             f"expected {HOOK_FAILURE_CATEGORIES!r}"
         )
 
     def test_ffdc_docs_list_known_failure_categories(self):
+        """Each known category must appear somewhere in ffdc.md.
+
+        Document-wide backtick mentions only — this does not parse the
+        category table or require a dedicated table row per label.
+        """
         docs = (
             Path(__file__).resolve().parents[2]
             / "docs"

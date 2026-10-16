@@ -67,8 +67,17 @@ re-exported on `torch_spyre.profiler`). The auto-hook subset is
 `HOOK_FAILURE_CATEGORIES` in the same file (hook-emitted labels today;
 `unknown` is capture-time only — default when `collect()` /
 `try_collect()` omit `failure_category`, or when empty, whitespace-only,
-or non-`str` input is passed). The table below is the short index;
-per-category triage notes follow in Field / support enumeration.
+or non-`str` input is passed). Adding or renaming a known (preferred)
+category requires updates in `_ffdc.py` (`CATEGORY_*` +
+`KNOWN_FAILURE_CATEGORIES`) and this document (including the table
+below). Update `HOOK_FAILURE_CATEGORIES` and the AST inventory
+`name_to_value` map in `tests/profiler/test_ffdc.py` only when the
+label is hook-emitted; capture-time-only labels (for example `unknown`)
+stay out of the hook set and map.
+`test_ffdc_docs_list_known_failure_categories` checks document-wide
+backtick mentions of each known category plus the set names; it does
+not parse table rows. The table below is the short index; per-category
+triage notes follow in Field / support enumeration.
 
 | `failure.category` | Layer | When it fires | Hook location |
 |---|---|---|---|
