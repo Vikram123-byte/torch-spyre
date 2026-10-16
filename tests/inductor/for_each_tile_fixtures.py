@@ -29,6 +29,7 @@ from collections.abc import Callable
 import torch
 from torch._inductor.utils import run_and_get_code
 
+from torch_spyre._inductor import spyre_hint
 from torch_spyre._inductor.wsr import for_each_tile
 
 
@@ -93,6 +94,115 @@ def split_k_fn(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
     return final
 
 
+def split_k_caller_init_fn(
+    X: torch.Tensor, Y: torch.Tensor, acc0: torch.Tensor
+) -> torch.Tensor:
+    """split_K whose init is a CALLER tensor (a graph input, not an in-graph fill).
+
+    Carry ownership: the accumulator must not overwrite acc0 in place.
+    """
+
+    def body(acc, ops):
+        x_tile, y_tile = ops
+        return acc + x_tile @ y_tile, None
+
+    final, _ = for_each_tile(body, (X, Y), dims=(-1, 0), tile_size=64, init=acc0)
+    return final
+
+
+def split_k_transposed_caller_init_fn(
+    X: torch.Tensor, Y: torch.Tensor, acc0: torch.Tensor
+) -> torch.Tensor:
+    """split_K whose carry init is a TRANSPOSED VIEW of a caller tensor.
+
+    ``acc0`` is ``[N, M]``; the carry value is ``acc0.t()`` (a ReinterpretView,
+    zero offset, full span). The pre-loop ownership copy is therefore a view
+    copy: copy the backing storage identity-wise, present the transposed view,
+    preserve values and leave ``acc0`` untouched (#4838).
+    """
+
+    def body(acc, ops):
+        x_tile, y_tile = ops
+        return acc + x_tile @ y_tile, None
+
+    final, _ = for_each_tile(body, (X, Y), dims=(-1, 0), tile_size=64, init=acc0.t())
+    return final
+
+
+def split_k_transposed_caller_init_two_carries_fn(
+    X: torch.Tensor, Y: torch.Tensor, acc0: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Two carries: ``a`` starts from ``acc0.t()``; ``b`` adds ``a``'s old value.
+
+    ``b`` reads ``a``'s pre-trip value, so besides its pre-loop ownership copy
+    ``a`` needs an in-loop snapshot (a write-after-read hazard). Both copies
+    must copy the caller's storage and keep the transpose (#4838).
+    """
+
+    def body(carry, ops):
+        a, b = carry
+        x_tile, y_tile = ops
+        return (a + x_tile @ y_tile, b + a), None
+
+    init = acc0.t()
+    (a, b), _ = for_each_tile(
+        body,
+        (X, Y),
+        dims=(-1, 0),
+        tile_size=64,
+        init=(init, torch.zeros_like(init)),
+    )
+    return a, b
+
+
+def split_k_transposed_caller_init_two_carries_reference(
+    X: torch.Tensor, Y: torch.Tensor, acc0: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Eager float reference for split_k_transposed_caller_init_two_carries_fn."""
+    a = acc0.t().float()
+    b = torch.zeros_like(a)
+    for k in range(0, X.shape[1], 64):
+        b = b + a
+        a = a + X[:, k : k + 64].float() @ Y[k : k + 64].float()
+    return a, b
+
+
+def split_k_private_transposed_init_fn(
+    X: torch.Tensor, Y: torch.Tensor
+) -> torch.Tensor:
+    """split_K whose carry init is a TRANSPOSED VIEW of an in-graph fill.
+
+    The backing storage is compiler-created scratch, so ownership must keep the
+    single-buffer (zero-copy) accumulator path even though the carry value is a
+    permuted view (#4838 private-view case).
+    """
+
+    def body(acc, ops):
+        x_tile, y_tile = ops
+        return acc + x_tile @ y_tile, None
+
+    init = torch.zeros(N, M, device=X.device, dtype=X.dtype)
+    final, _ = for_each_tile(body, (X, Y), dims=(-1, 0), tile_size=64, init=init.t())
+    return final
+
+
+def two_loops_shared_init_fn(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+    """Two split-K reductions sharing ONE in-graph `init` buffer.
+
+    Ownership: each loop must get its own initial value, so the two
+    accumulators must not write the same buffer.
+    """
+
+    def body(acc, ops):
+        x_tile, y_tile = ops
+        return acc + x_tile @ y_tile, None
+
+    init = torch.zeros(M, N, device=X.device, dtype=X.dtype)
+    a, _ = for_each_tile(body, (X, Y), dims=(-1, 0), tile_size=64, init=init)
+    b, _ = for_each_tile(body, (X, Y), dims=(-1, 0), tile_size=64, init=init)
+    return a + b
+
+
 def nested_split_m_then_k_fn(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
     """Nested case: outer for_each_tile maps M; inner for_each_tile carries K.
 
@@ -122,6 +232,53 @@ def nested_split_m_then_k_fn(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
 
     _, out = for_each_tile(outer_body, (X, Y), dims=(0, None), tile_size=64, out_dim=0)
     return out
+
+
+def nested_two_inner_loops_shared_init_fn(
+    X: torch.Tensor, Y: torch.Tensor
+) -> torch.Tensor:
+    """Two inner loops sharing ONE fill made in the outer M loop's body.
+
+    The nested form of two_loops_shared_init_fn: the fill has two readers, so
+    it is private to neither inner loop, and splicing each inner loop inserts
+    a pre-loop copy of it (#4838). Each copy sits inside the outer loop's
+    body: it must run on every outer trip, and never inside its inner loop.
+    Only the first inner loop reads the outer M tile; the second tiles the
+    loop-invariant ``Y``, so no outer tile has two sibling consumers (#4581).
+    """
+
+    def outer_body(_, ops):
+        x_tile, y_whole = ops
+
+        def k_body(acc, inner_ops):
+            x_k_tile, y_k_tile = inner_ops
+            return acc + x_k_tile @ y_k_tile, None
+
+        def row_body(acc, inner_ops):
+            (y_rows,) = inner_ops
+            return acc + y_rows, None
+
+        init = torch.zeros(x_tile.shape[0], N, device=X.device, dtype=X.dtype)
+        a, _ = for_each_tile(
+            k_body, (x_tile, y_whole), dims=(-1, 0), tile_size=64, init=init
+        )
+        b, _ = for_each_tile(row_body, (y_whole,), dims=(0,), tile_size=64, init=init)
+        return None, a + b
+
+    _, out = for_each_tile(outer_body, (X, Y), dims=(0, None), tile_size=64, out_dim=0)
+    return out
+
+
+def nested_two_inner_loops_shared_init_reference(
+    X: torch.Tensor, Y: torch.Tensor
+) -> torch.Tensor:
+    """Eager float reference for nested_two_inner_loops_shared_init_fn.
+
+    Every outer M tile gets ``X_tile @ Y`` from the first inner loop, plus the
+    sum of ``Y``'s 64-row blocks from the second, both started from zeros.
+    """
+    y_blocks = Y.float().reshape(-1, 64, Y.shape[1]).sum(0)
+    return X.float() @ Y.float() + y_blocks.repeat(X.shape[0] // 64, 1)
 
 
 def nested_split_m_then_k_reference(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
@@ -685,6 +842,12 @@ def online_softmax_fn(
     return acc / denom
 
 
+# Half of LQ (128): the outer loop must make more than one trip to actually
+# exercise nesting, so this is deliberately narrower than SOFTMAX_TILE_SIZE
+# (128, the inner loop's K/V tile size) rather than equal to it.
+NESTED_SOFTMAX_OUTER_TILE_SIZE = 64
+
+
 def nested_online_softmax_fn(
     Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor
 ) -> torch.Tensor:
@@ -698,10 +861,21 @@ def nested_online_softmax_fn(
         body,
         (Q,),
         dims=(0,),
-        tile_size=64,
+        tile_size=NESTED_SOFTMAX_OUTER_TILE_SIZE,
         out_dim=0,
     )
     return out
+
+
+def nested_online_softmax_reference(
+    Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor
+) -> torch.Tensor:
+    """Eager reference for nested_online_softmax_fn: per-row-tile online softmax."""
+    rows = []
+    for start in range(0, Q.shape[0], NESTED_SOFTMAX_OUTER_TILE_SIZE):
+        q_tile = Q[start : start + NESTED_SOFTMAX_OUTER_TILE_SIZE]
+        rows.append(online_softmax_reference(q_tile, K, V))
+    return torch.cat(rows, dim=0)
 
 
 def batched_online_softmax_fn(
@@ -857,13 +1031,11 @@ def abs_add_mul_tiled_reference(
 def softmax_row_tiled_fn(X: torch.Tensor, tile_size: int) -> torch.Tensor:
     """Map mode: row-tile dim 0, softmax the (whole, untiled) last dim per tile.
 
-    Mirrors test_hint_softmax_row_tiling's HINT-driven equivalent
-    (test_coarse_tile_e2e.py): reduction lives entirely inside the tile body
-    on the untiled column dim, so a multi-stick tile_size exercises the same
-    per-tile device_size[1] invariant that test documents -- a bug that
-    shrinks the row-stride dimension corrupts all stick groups after the
-    first in each non-first tile, and only shows up once a tile spans more
-    than one stick's worth of columns.
+    The reduction lives entirely inside the tile body on the untiled column
+    dim, so a multi-stick tile_size exercises the per-tile device_size[1]
+    invariant: a bug that shrinks the row-stride dimension corrupts all stick
+    groups after the first in each non-first tile, and only shows up once a
+    tile spans more than one stick's worth of columns.
     """
 
     def body(_, ops):
@@ -982,7 +1154,7 @@ def paged_gather_fn(
 def paged_gather_reference(pages: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
     """The same accumulation in fp32 on CPU, looped in Python over PAGE_ORDER."""
     pf, qf = pages.float(), q.float()
-    acc = torch.zeros(PAGE_LQ, PAGE_HS)
+    acc = torch.zeros(q.shape[0], PAGE_HS)
     for p in PAGE_ORDER:
         page = pf[p]
         acc = acc + (qf @ page.transpose(0, 1)) @ page
@@ -1059,6 +1231,63 @@ def paged_gather_kv_reference(
     return acc
 
 
+# Half of PAGE_LQ (32): like NESTED_SOFTMAX_OUTER_TILE_SIZE above, chosen so
+# the outer loop makes more than one trip.
+NESTED_GATHER_OUTER_TILE_SIZE = PAGE_LQ // 2
+
+
+def paged_gather_nested_fn(
+    pages: torch.Tensor, table: torch.Tensor, q: torch.Tensor
+) -> torch.Tensor:
+    """Nested case: outer for_each_tile maps Q rows; inner gathers one page
+    per trip (Kind.GATHER nested inside another for_each_tile level).
+
+    Each outer Q-tile re-runs the full inner paged-gather loop over every
+    block in the table, mirroring how paged attention would tile queries
+    while still visiting every KV page per query tile. The inner body is
+    paged_gather_fn's own gather-mode body (tiled block table, invariant
+    page pool, one page per trip via a POINT read of the page index) --
+    see paged_gather_fn's docstring for the coarse-tiling mechanics that
+    read exercises on its own; here it additionally has to survive being
+    re-spliced once per outer trip.
+    """
+
+    def outer_body(_, outer_tiles):
+        (q_tile,) = outer_tiles
+        q_tile_rows = q_tile.shape[0]
+
+        def inner_body(acc, inner_tiles):
+            table_row, pages_all, q_whole = inner_tiles
+            page_idx = table_row[0, 0:1]
+            page = pages_all.index_select(0, page_idx).squeeze(0)
+            scores = q_whole @ page.transpose(0, 1)
+            return acc + scores @ page, None
+
+        acc0 = torch.zeros(q_tile_rows, PAGE_HS, device=q.device, dtype=q.dtype)
+        final, _ = for_each_tile(
+            inner_body,
+            (table, pages, q_tile),
+            dims=(0, None, None),
+            tile_size=1,
+            init=acc0,
+        )
+        return None, final
+
+    _, out = for_each_tile(
+        outer_body, (q,), dims=(0,), tile_size=NESTED_GATHER_OUTER_TILE_SIZE, out_dim=0
+    )
+    return out
+
+
+def paged_gather_nested_reference(pages: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+    """Eager Python nesting of the same tiling, for value assertions."""
+    rows = []
+    for start in range(0, q.shape[0], NESTED_GATHER_OUTER_TILE_SIZE):
+        end = start + NESTED_GATHER_OUTER_TILE_SIZE
+        rows.append(paged_gather_reference(pages, q[start:end]))
+    return torch.cat(rows, dim=0)
+
+
 @contextlib.contextmanager
 def _post_grad_graphs():
     """Capture each post-grad graph right after decompose_scan_to_while_loop runs.
@@ -1069,6 +1298,7 @@ def _post_grad_graphs():
     so this monkey-patches the (now permanent, #4136-landed) decomposition
     function for the duration of one compile.
     """
+    import torch._inductor.config as inductor_config
     import torch._inductor.fx_passes.post_grad as pg
 
     seen: list[torch.fx.GraphModule] = []
@@ -1081,7 +1311,9 @@ def _post_grad_graphs():
 
     pg.decompose_scan_to_while_loop = wrapper
     try:
-        yield seen
+        # A cache hit skips the post-grad passes, so nothing would be captured.
+        with inductor_config.patch(force_disable_caches=True):
+            yield seen
     finally:
         pg.decompose_scan_to_while_loop = original
 
@@ -1109,3 +1341,326 @@ def capture_post_grad_while_loop(
     )
     assert found, "expected a while_loop node in the post-grad graph"
     return out, gm
+
+
+def consumed_row_inputs() -> tuple[torch.Tensor]:
+    """A tiny int/float block table whose tiled dim is CONSUMED by the body.
+
+    table[2, 32] tiled along dim 0 (tile_size 1); the body reads the whole
+    consumed row (``tiles[0][0, :]``), so the marker's tiled axis is sliced to
+    a constant. The marker's own read index over the flat table is
+    ``e + 32 * u0`` with ``range(e) == 32`` -- the exact coefficient
+    coincidence (coeff(u0)=32 == coeff(e)*range(e)=1*32) that makes
+    lookup_marker_dim falsely resolve a surviving tiled position for a
+    consumed axis.
+    """
+    table = torch.arange(2 * 32, dtype=torch.float16).reshape(2, 32)
+    return (table,)
+
+
+def consumed_row_fn(table: torch.Tensor) -> torch.Tensor:
+    """for_each_tile over table's dim 0; the tile axis is consumed in-body."""
+    from torch_spyre._inductor.wsr import for_each_tile
+
+    def body(acc, tiles):
+        return acc + tiles[0][0, :], None
+
+    acc0 = torch.zeros_like(table[0])
+    final, _ = for_each_tile(body, (table,), dims=(0,), tile_size=1, init=acc0)
+    return final
+
+
+# ---------------------------------------------------------------------------
+# Graph-shape fixtures: for_each_tile bodies that interact with other passes
+# (restickify, views, broadcast, outside consumers, E-tiled matmul, carried
+# reductions).  Each *_fn returns the compiled result; each *_reference
+# computes the CPU expectation from the same fp16 operands.
+# ---------------------------------------------------------------------------
+
+
+def shaped_randn(*shape: int, seed: int = 0) -> torch.Tensor:
+    """Deterministic fp16 CPU tensor, independent of global RNG state."""
+    gen = torch.Generator().manual_seed(seed)
+    return torch.randn(*shape, generator=gen).to(torch.float16)
+
+
+def add_3d_tiled_fn(
+    A: torch.Tensor, B: torch.Tensor, dim: int, tile_size: int
+) -> torch.Tensor:
+    """Map mode: tile a plain 3-D add along ``dim`` (outer or middle)."""
+
+    def body(_, ops):
+        a_tile, b_tile = ops
+        return None, a_tile + b_tile
+
+    _, out = for_each_tile(
+        body, (A, B), dims=(dim, dim), tile_size=tile_size, out_dim=dim
+    )
+    return out
+
+
+def restickify_add_fn(A: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
+    """a.t() + x, tiled on the result's dim 0 (= a's dim 1): a restickify per tile."""
+
+    def body(_, ops):
+        a_tile, x_tile = ops
+        return None, a_tile.t() + x_tile
+
+    _, out = for_each_tile(body, (A, X), dims=(1, 0), tile_size=64, out_dim=0)
+    return out
+
+
+def restickify_transpose12_fn(A: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
+    """a.transpose(1, 2) + x, tiled on the result's dim 1 (= a's dim 2)."""
+
+    def body(_, ops):
+        a_tile, x_tile = ops
+        return None, a_tile.transpose(1, 2) + x_tile
+
+    _, out = for_each_tile(body, (A, X), dims=(2, 1), tile_size=32, out_dim=1)
+    return out
+
+
+def restickify_matmul_xt_y_fn(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+    """x.t() @ y, tiled on the result's M (= x's dim 1); y is invariant."""
+
+    def body(_, ops):
+        x_tile, y_whole = ops
+        return None, x_tile.t() @ y_whole
+
+    _, out = for_each_tile(body, (X, Y), dims=(1, None), tile_size=64, out_dim=0)
+    return out
+
+
+def matmul_x_yt_tile_m_fn(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+    """x @ y.t() (the nn.Linear weight pattern), tiled on M; y is invariant."""
+
+    def body(_, ops):
+        x_tile, y_whole = ops
+        return None, x_tile @ y_whole.t()
+
+    _, out = for_each_tile(body, (X, Y), dims=(0, None), tile_size=64, out_dim=0)
+    return out
+
+
+def matmul_x_yt_tile_n_fn(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+    """x @ y.t(), tiled on N (y's dim 0); x is invariant."""
+
+    def body(_, ops):
+        x_whole, y_tile = ops
+        return None, x_whole @ y_tile.t()
+
+    _, out = for_each_tile(body, (X, Y), dims=(None, 0), tile_size=64, out_dim=1)
+    return out
+
+
+def matmul_x_yt_nested_fn(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+    """x @ y.t() with the outer loop on M and the inner loop on N."""
+
+    def outer_body(_, outer_ops):
+        x_rows, y_whole = outer_ops
+
+        def inner_body(_, inner_ops):
+            x_block, y_block = inner_ops
+            return None, x_block @ y_block.t()
+
+        _, row_out = for_each_tile(
+            inner_body, (x_rows, y_whole), dims=(None, 0), tile_size=64, out_dim=1
+        )
+        return None, row_out
+
+    _, out = for_each_tile(outer_body, (X, Y), dims=(0, None), tile_size=64, out_dim=0)
+    return out
+
+
+def matmul_xt_y_tile_n_fn(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+    """x.t() @ y, tiled on N (y's dim 1); x is invariant."""
+
+    def body(_, ops):
+        x_whole, y_tile = ops
+        return None, x_whole.t() @ y_tile
+
+    _, out = for_each_tile(body, (X, Y), dims=(None, 1), tile_size=128, out_dim=1)
+    return out
+
+
+def matmul_xt_y_nested_fn(X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+    """x.t() @ y with the outer loop on M (x's dim 1) and the inner loop on N."""
+
+    def outer_body(_, outer_ops):
+        x_cols, y_whole = outer_ops
+
+        def inner_body(_, inner_ops):
+            x_block, y_block = inner_ops
+            return None, x_block.t() @ y_block
+
+        _, row_out = for_each_tile(
+            inner_body, (x_cols, y_whole), dims=(None, 1), tile_size=128, out_dim=1
+        )
+        return None, row_out
+
+    _, out = for_each_tile(outer_body, (X, Y), dims=(1, None), tile_size=128, out_dim=0)
+    return out
+
+
+def fill_add_tiled_fn(X: torch.Tensor, tile_size: int) -> torch.Tensor:
+    """x + full(0.5), with the fill built INSIDE the loop body.
+
+    The fill is a scalar-fill ComputedBuffer with no tiled loop variable, so it
+    is loop-invariant: its own write must not advance with the loop.
+    """
+
+    def body(_, ops):
+        (x_tile,) = ops
+        bias = torch.full(x_tile.shape, 0.5, dtype=x_tile.dtype, device=x_tile.device)
+        return None, x_tile + bias
+
+    _, out = for_each_tile(body, (X,), dims=(0,), tile_size=tile_size, out_dim=0)
+    return out
+
+
+def outside_consumer_fn(
+    A: torch.Tensor, B: torch.Tensor, C: torch.Tensor
+) -> torch.Tensor:
+    """A tiled add whose full result is consumed by ops AFTER the loop."""
+
+    def body(_, ops):
+        a_tile, b_tile = ops
+        return None, a_tile + b_tile
+
+    _, z = for_each_tile(body, (A, B), dims=(0, 0), tile_size=64, out_dim=0)
+    return z * 2.0 + C
+
+
+def view_transpose_head_tiled_fn(
+    X: torch.Tensor, Y: torch.Tensor, heads: int, head_dim: int
+) -> torch.Tensor:
+    """x.view(B, S, H, D).transpose(1, 2) * y, tiled over H (two heads per tile)."""
+    batch, seq, _ = X.shape
+    x_bhsd = X.view(batch, seq, heads, head_dim).transpose(1, 2)
+
+    def body(_, ops):
+        x_tile, y_tile = ops
+        return None, x_tile * y_tile
+
+    _, out = for_each_tile(body, (x_bhsd, Y), dims=(1, 1), tile_size=2, out_dim=1)
+    return out
+
+
+def view_transpose_head_tiled_reference(
+    X: torch.Tensor, Y: torch.Tensor, heads: int, head_dim: int
+) -> torch.Tensor:
+    batch, seq, _ = X.shape
+    return X.view(batch, seq, heads, head_dim).transpose(1, 2) * Y
+
+
+def unsqueeze_broadcast_tiled_fn(
+    A: torch.Tensor, B: torch.Tensor, tile_b: bool
+) -> torch.Tensor:
+    """a.unsqueeze(0) * b: tile b's leading dim (a invariant) or the shared dim 1."""
+    a_unsq = A.unsqueeze(0)
+
+    def body(_, ops):
+        a_op, b_tile = ops
+        return None, a_op * b_tile
+
+    if tile_b:
+        _, out = for_each_tile(
+            body, (a_unsq, B), dims=(None, 0), tile_size=2, out_dim=0
+        )
+    else:
+        _, out = for_each_tile(body, (a_unsq, B), dims=(1, 1), tile_size=64, out_dim=1)
+    return out
+
+
+def unsqueeze_broadcast_reference(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+    return A.unsqueeze(0) * B
+
+
+def moe_tile_experts_fn(X: torch.Tensor, W: torch.Tensor) -> torch.Tensor:
+    """[1, T, H] @ [E, H, F] -> [E, T, F], one expert's weights per trip."""
+
+    def body(_, ops):
+        x_whole, w_tile = ops
+        return None, x_whole @ w_tile
+
+    _, out = for_each_tile(body, (X, W), dims=(None, 0), tile_size=1, out_dim=0)
+    return out
+
+
+def carried_reduction_fn(
+    values: torch.Tensor, combine: Callable, init_value: float
+) -> torch.Tensor:
+    """Reduce ``values`` over its dim 0 one slab per trip, through a carry."""
+
+    def body(acc, ops):
+        (slab,) = ops
+        return combine(acc, slab), None
+
+    init = torch.full(
+        values.shape[1:], init_value, device=values.device, dtype=values.dtype
+    )
+    final, _ = for_each_tile(body, (values,), dims=(0,), tile_size=1, init=init)
+    return final
+
+
+def nested_restickify_add_fn(A: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
+    """a.t() + x tiled at two levels: the outer loop tiles the result's rows
+    (a's dim 1), the inner loop its columns (a's dim 0); a restickify per tile."""
+
+    def outer_body(_, outer_ops):
+        a_cols, x_rows = outer_ops
+
+        def inner_body(_, inner_ops):
+            a_blk, x_blk = inner_ops
+            return None, a_blk.t() + x_blk
+
+        _, row_out = for_each_tile(
+            inner_body, (a_cols, x_rows), dims=(0, 1), tile_size=128, out_dim=1
+        )
+        return None, row_out
+
+    _, out = for_each_tile(outer_body, (A, X), dims=(1, 0), tile_size=64, out_dim=0)
+    return out
+
+
+def carried_expert_sum_fn(values: torch.Tensor, row_split: int) -> torch.Tensor:
+    """values[E, T, H].sum(0), one expert slab per trip, through a loop carry.
+
+    ``row_split`` is a ``work_div`` on the output row dim ``T``; ``values`` must
+    be named ``["E", "T", "H"]`` for the hint to resolve.  The carry's initial
+    value is built by the same function, so the solver, not the caller, has to
+    give it the update's split.
+    """
+
+    def body(acc, ops):
+        (slab,) = ops
+        return acc + slab.sum(0), None
+
+    init = torch.zeros(values.shape[1:], dtype=values.dtype, device=values.device)
+    with spyre_hint(work_div={"T": row_split}):
+        final, _ = for_each_tile(body, (values,), dims=(0,), tile_size=1, init=init)
+    return final
+
+
+def carried_routed_expert_sum_fn(
+    values: torch.Tensor, routing: torch.Tensor, row_split: int
+) -> torch.Tensor:
+    """sum over E of values * route, with route a permuted, contiguous copy.
+
+    ``routing`` is [T, E, 1]; the per-expert route slab [1, T, 1] is tiled with
+    ``values`` along E, so the tiled operand is itself the output of an
+    earlier relayout.
+    """
+    route = routing.permute(1, 0, 2).contiguous().clone()
+
+    def body(acc, ops):
+        slab, route_slab = ops
+        return acc + (slab * route_slab).sum(0), None
+
+    init = torch.zeros(values.shape[1:], dtype=values.dtype, device=values.device)
+    with spyre_hint(work_div={"T": row_split}):
+        final, _ = for_each_tile(
+            body, (values, route), dims=(0, 0), tile_size=1, init=init
+        )
+    return final
