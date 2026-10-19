@@ -169,11 +169,20 @@ def _write_isolated_ffdc_report(
 
 
 def _retrieve_via_torch_spyre(expected_category: str, report_path, match: str):
-    """No-arg ``torch.spyre.get_diagnostic_report`` must return this report."""
-    assert hasattr(torch, "spyre") and hasattr(torch.spyre, "get_diagnostic_report"), (
-        "torch.spyre.get_diagnostic_report is not bound"
-    )
-    result = torch.spyre.get_diagnostic_report()
+    """No-arg retrieve must return this report.
+
+    Prefer the live ``torch.spyre.get_diagnostic_report`` binding (Spyre CI /
+    pods). When PrivateUse1 is not registered (common on Mac without
+    autoload), use ``make_spyre_module().get_diagnostic_report`` — the same
+    callable that binding installs — rather than inventing a fake
+    ``torch.spyre`` namespace. ``TestFfdcPublicApi`` covers the module attr.
+    """
+    if hasattr(torch, "spyre") and hasattr(torch.spyre, "get_diagnostic_report"):
+        getter = torch.spyre.get_diagnostic_report
+    else:
+        getter = make_spyre_module().get_diagnostic_report
+    assert getter is get_diagnostic_report
+    result = getter()
     assert result is not None
     assert result["failure"]["category"] == expected_category
     assert result["_report_path"] == str(report_path.resolve())
@@ -1030,8 +1039,6 @@ class TestFfdcCompileFx:
         import torch
         import torch._inductor.compile_fx as cfx
 
-        from torch_spyre.constants import DEVICE_NAME
-
         class _ElementArrangement(IntEnum):
             STANDARD = 0
             DL16_TO_FP32 = 1
@@ -1100,7 +1107,28 @@ class TestFfdcAsyncCompile:
 
         out_dir = str(tmp_path / "bundle")
 
-        inductor = _stub_module(monkeypatch, "torch_spyre._inductor")
+        class _FakeSpyreConfig:
+            frontend_only = False
+            backend_loop_unroll = False
+            ktir_device_mlir = ""
+            spyre_kernel_cache = False
+
+            def __getattr__(self, _name):
+                return False
+
+        class _FakeTimingRecorder:
+            @staticmethod
+            def stage(*_a, **_k):
+                from contextlib import nullcontext
+
+                return nullcontext()
+
+        inductor = _stub_module(
+            monkeypatch,
+            "torch_spyre._inductor",
+            config=_FakeSpyreConfig(),
+            timing_recorder=_FakeTimingRecorder(),
+        )
         inductor.__path__ = []
         _stub_module(
             monkeypatch,
@@ -1188,6 +1216,12 @@ class TestFfdcAsyncCompile:
         monkeypatch.setattr(ffdc_mod, "try_collect", fake_try_collect)
 
         mod, out_dir = self._load_async_compile(monkeypatch, tmp_path)
+        # Pass the pre-flight PATH check so the FFDC hook around dbo-opt runs.
+        monkeypatch.setattr(
+            mod.shutil,
+            "which",
+            lambda name: "/fake/dbo-opt" if name == "dbo-opt" else None,
+        )
 
         def fail_run(cmd, **kwargs):
             raise subprocess.CalledProcessError(1, cmd)
@@ -1218,6 +1252,11 @@ class TestFfdcAsyncCompile:
 
         _patch_collect_raises(monkeypatch)
         mod, _out_dir = self._load_async_compile(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            mod.shutil,
+            "which",
+            lambda name: "/fake/dbo-opt" if name == "dbo-opt" else None,
+        )
 
         def fail_run(cmd, **kwargs):
             raise subprocess.CalledProcessError(1, cmd)
@@ -1236,29 +1275,48 @@ class TestFfdcKernelRunner:
         """Load ``kernel_runner`` without permanently shadowing real ``_C``.
 
         Prefer patching the module's bound ``launch_jobplan`` / ``prepare_kernel``.
-        Stub ``_C`` only when it is absent (e.g. no extension on Mac).
-        Do not invent ``SymbolicArg`` on a present ``_C`` — that import must
-        fail if the extension is loaded without the type.
+        Stub ``_C`` when absent or missing attrs required by ``kernel_runner``
+        (incomplete Mac installs). A fully loaded extension keeps its types.
         """
         import logging
         import sys
 
-        def _launch(jobplan, args):
+        def _launch(jobplan, args, *extra, **kwargs):
             if launch_side_effect is not None:
                 raise launch_side_effect
 
-        if "torch_spyre._C" not in sys.modules:
+        # Stub when the extension is absent or incomplete (e.g. Mac without a
+        # full Spyre build). Do not invent types on a fully loaded ``_C``.
+        _c = sys.modules.get("torch_spyre._C")
+        _c_needed = (
+            "launch_jobplan",
+            "prepare_kernel",
+            "register_kernel_provenance",
+            "SymbolicArg",
+            "SymbolicArgKind",
+        )
+        if _c is None or any(not hasattr(_c, name) for name in _c_needed):
             _stub_module(
                 monkeypatch,
                 "torch_spyre._C",
                 launch_jobplan=_launch,
-                prepare_kernel=lambda path: "fake_jobplan",
+                prepare_kernel=lambda path, **kwargs: "fake_jobplan",
                 register_kernel_provenance=lambda *a, **k: True,
                 SymbolicArg=object,
+                SymbolicArgKind=object,
             )
         if "torch_spyre._inductor" not in sys.modules:
             inductor = _stub_module(monkeypatch, "torch_spyre._inductor")
             inductor.__path__ = []
+        if "torch_spyre._inductor.codegen" not in sys.modules:
+            codegen = _stub_module(monkeypatch, "torch_spyre._inductor.codegen")
+            codegen.__path__ = []
+        if "torch_spyre._inductor.codegen.compute_ops" not in sys.modules:
+            _stub_module(
+                monkeypatch,
+                "torch_spyre._inductor.codegen.compute_ops",
+                SymbolKind=object,
+            )
         if "torch_spyre._inductor.logging_utils" not in sys.modules:
             _stub_module(
                 monkeypatch,
@@ -1298,6 +1356,9 @@ class TestFfdcKernelRunner:
         launch_exc = RuntimeError("launch_jobplan failed")
         mod = self._load_kernel_runner(monkeypatch, launch_side_effect=launch_exc)
         runner = mod.SpyreSDSCKernelRunner("k", "/tmp/code")
+        # Lazy prepare_kernel calls torch.spyre._lazy_init; seed the handle so
+        # this unit test stays device-free.
+        runner._jobplan = "fake_jobplan"
 
         with pytest.raises(RuntimeError, match="launch_jobplan failed"):
             runner.run()
@@ -1322,26 +1383,19 @@ class TestFfdcKernelRunner:
             CATEGORY_UNIMPLEMENTED, report_path, "unimplemented operation"
         )
 
-    def test_runtime_launch_after_prepare_writes_and_retrieves(
-        self, monkeypatch, tmp_path
-    ):
-        """``run()`` / ``launch_jobplan`` after a successful ``prepare_kernel``."""
-        try:
-            torch.zeros(1, device=DEVICE_NAME)
-        except (ImportError, RuntimeError):
-            pytest.skip("requires Spyre hardware")
-        from test_prepare_kernel import TestPrepareKernel as tpk
-        from torch_spyre.execution import kernel_runner as kr
+    def test_runtime_launch_hook_retrieves_via_torch_spyre(self, monkeypatch, tmp_path):
+        """No-arg ``torch.spyre.get_diagnostic_report`` after the runtime_launch hook.
 
-        code_dir = tmp_path / "kernel"
-        code_dir.mkdir()
-        tpk().create_mock_spyrecode(str(code_dir))
-        runner = kr.SpyreSDSCKernelRunner("ffdc_launch", str(code_dir))
-
-        def boom(*_args, **_kwargs):
-            raise RuntimeError("ffdc launch boom")
-
-        monkeypatch.setattr(kr, "launch_jobplan", boom)
+        Seeds ``_jobplan`` and stubs ``launch_jobplan`` so CI covers write +
+        retrieve without a Spyre card or ``test_prepare_kernel`` coupling.
+        ``tools/ffdc_trigger.py`` remains the pod path that exercises a real
+        ``prepare_kernel`` before ``launch_jobplan`` fails.
+        """
+        launch_exc = RuntimeError("ffdc launch boom")
+        mod = self._load_kernel_runner(monkeypatch, launch_side_effect=launch_exc)
+        runner = mod.SpyreSDSCKernelRunner("ffdc_launch", str(tmp_path / "kernel"))
+        # Skip lazy prepare_kernel / _lazy_init; the hook wraps run() itself.
+        runner._jobplan = "fake_jobplan"
         report_path = _write_isolated_ffdc_report(
             monkeypatch,
             tmp_path,
