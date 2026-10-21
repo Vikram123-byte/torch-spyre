@@ -13,12 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-FFDC trigger — exercises kernel_runner.py exception paths on real hardware.
+"""FFDC trigger — exercises kernel_runner exception paths on Spyre hardware.
 
-Drives SpyreSDSCKernelRunner and SpyreUnimplementedRunner through their
-real exception paths so FFDC fires on a genuine traceback with real
-hardware state and compiler artifacts.
+Scenario A: minimal spyreCodeDir so ``prepare_kernel`` can succeed, then
+``launch_jobplan`` is patched to raise so ``@with_ffdc(CATEGORY_RUNTIME_LAUNCH)``
+fires on ``run()``. Scenario B: ``SpyreUnimplementedRunner.run``
+(``@with_ffdc(CATEGORY_UNIMPLEMENTED)``).
 
 Run from repo root with:
     TORCH_SPYRE_FFDC=1 TORCH_COMPILE_DEBUG=1 python3 tools/ffdc_trigger.py
@@ -183,6 +183,9 @@ def _run_scenarios(reports, output_dir: Path) -> None:
             def boom(*_args, **_kwargs):
                 raise RuntimeError("ffdc launch boom")
 
+            # Path snapshot, not mtime/t0: same-second writes can be missed on
+            # coarse filesystems (see commit "find ffdc_trigger reports by path
+            # snapshot").
             before = set(glob.glob(_category_pattern(output_dir, "runtime_launch")))
             with patch.object(kr, "launch_jobplan", boom):
                 try:
@@ -203,6 +206,7 @@ def _run_scenarios(reports, output_dir: Path) -> None:
         name="test_kernel_fft",
         op="aten::fft_fft",
     )
+    # Same path-snapshot approach as Scenario A (not mtime/t0).
     before = set(glob.glob(_category_pattern(output_dir, "unimplemented")))
     try:
         urunner.run()
