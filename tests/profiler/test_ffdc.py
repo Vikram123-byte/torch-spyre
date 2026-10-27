@@ -700,15 +700,30 @@ class TestFfdcCollect:
             assert key in meta
 
     def test_environment_keys_captured(self):
+        # Explicit contract — do not import ``_ENV_KEYS`` as the expected
+        # set, or deleting a key from both the list and this assertion
+        # would still pass.
+        expected = frozenset(
+            {
+                "TORCH_COMPILE_DEBUG",
+                "TORCH_SPYRE_DEBUG",
+                "DUMP_SPYRE_CODE",
+                "TORCH_LOGS",
+                "TORCHINDUCTOR_FORCE_DISABLE_CACHES",
+                "SENCORES",
+                "TORCH_SPYRE_FFDC",
+            }
+        )
         from torch_spyre.profiler._ffdc import _ENV_KEYS
+
+        assert frozenset(_ENV_KEYS) == expected
 
         try:
             raise ValueError("x")
         except ValueError as exc:
             report = self._collect_to_tmpdir(exc, failure_category=CATEGORY_UNKNOWN)
 
-        env = report["environment"]
-        assert set(env) == set(_ENV_KEYS)
+        assert frozenset(report["environment"]) == expected
 
     def test_capture_latency_is_positive(self):
         try:
