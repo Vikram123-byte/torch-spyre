@@ -357,8 +357,9 @@ FFDC (First Failure Data Capture)
           print(report["_report_path"])
 
    The same function is also available as
-   ``torch_spyre.profiler.get_diagnostic_report``. For usage workflow,
-   report locations, and JSON triage, see
+   ``torch_spyre.profiler.get_diagnostic_report``. For the enable →
+   fail → retrieve → triage workflow, report schema, and
+   interpretation notes, see
    :doc:`../user_guide/profiling/ffdc`.
 
 Tensor Operations
