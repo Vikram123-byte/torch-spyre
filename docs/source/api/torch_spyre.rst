@@ -332,11 +332,15 @@ FFDC (First Failure Data Capture)
    Retrieval does not require that variable, even if it was unset in a
    later session. The directory **does** have to match: if
    ``TORCHINDUCTOR_CACHE_DIR`` (or ``TMPDIR``) differs between capture
-   and retrieval, pass the original ``output_dir`` explicitly.
+   and retrieval, pass the original **report** directory as
+   ``output_dir`` — ``<cache-root>/torch-spyre/ffdc_reports`` (or
+   ``<tempdir>/torch-spyre-ffdc`` on the fallback path), **not** the
+   cache or ``TMPDIR`` root. This function searches ``output_dir`` for
+   JSON files; it does not append ``torch-spyre/ffdc_reports``.
 
-   :param output_dir: Directory to search. If ``None``, uses
-       ``<Inductor cache root>/torch-spyre/ffdc_reports``, where the cache
-       root is ``$TORCHINDUCTOR_CACHE_DIR`` or else
+   :param output_dir: Directory containing FFDC JSON files. If ``None``,
+       uses ``<Inductor cache root>/torch-spyre/ffdc_reports``, where the
+       cache root is ``$TORCHINDUCTOR_CACHE_DIR`` or else
        ``<tempdir>/torchinductor_<user>`` from Inductor ``cache_dir()``
        (not ``~/.cache/torch/inductor``). ``<tempdir>`` is
        ``tempfile.gettempdir()``, typically ``/tmp`` on Linux, or

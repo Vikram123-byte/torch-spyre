@@ -700,14 +700,15 @@ class TestFfdcCollect:
             assert key in meta
 
     def test_environment_keys_captured(self):
+        from torch_spyre.profiler._ffdc import _ENV_KEYS
+
         try:
             raise ValueError("x")
         except ValueError as exc:
             report = self._collect_to_tmpdir(exc, failure_category=CATEGORY_UNKNOWN)
 
         env = report["environment"]
-        for key in ("TORCH_COMPILE_DEBUG", "TORCH_SPYRE_DEBUG"):
-            assert key in env
+        assert set(env) == set(_ENV_KEYS)
 
     def test_capture_latency_is_positive(self):
         try:
@@ -720,6 +721,22 @@ class TestFfdcCollect:
     def test_get_diagnostic_report_returns_none_when_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             assert get_diagnostic_report(output_dir=tmp) is None
+
+    def test_get_diagnostic_report_rejects_cache_root_as_output_dir(
+        self, monkeypatch, tmp_path
+    ):
+        """``output_dir`` is the report dir, not the Inductor cache root."""
+        monkeypatch.setenv("TORCH_SPYRE_FFDC", "1")
+        monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path))
+        reports_dir = _default_output_dir()
+        try:
+            raise RuntimeError("cache-root probe")
+        except RuntimeError as exc:
+            collect(exc, failure_category=CATEGORY_UNKNOWN, output_dir=str(reports_dir))
+        assert get_diagnostic_report(output_dir=str(tmp_path)) is None
+        hit = get_diagnostic_report(output_dir=str(reports_dir))
+        assert hit is not None
+        assert hit["failure"]["category"] == CATEGORY_UNKNOWN
 
     def test_default_output_dir_uses_inductor_cache_root(self, monkeypatch, tmp_path):
         # Documents the real Inductor layout: cache_dir() → default_cache_dir()
@@ -1046,9 +1063,18 @@ class TestFfdcCompileFx:
             EXX2 = 3
             QFP8CH = 4
 
-        if "torch_spyre._C" not in sys.modules:
+        # Minimal values for ``torch_spyre._inductor.constants`` import.
+        class _DataFormats(IntEnum):
+            SEN169_FP16 = 0
+            IEEE_FP32 = 1
+            IEEE_INT32 = 2
+            SENUINT32 = 3
+
+        _c = sys.modules.get("torch_spyre._C")
+        if _c is None or not hasattr(_c, "DataFormats"):
             _c = types.ModuleType("torch_spyre._C")
             _c.ElementArrangement = _ElementArrangement
+            _c.DataFormats = _DataFormats
             _c.launch_jobplan = lambda *a, **k: None
             _c.prepare_kernel = lambda *a, **k: None
             monkeypatch.setitem(sys.modules, "torch_spyre._C", _c)

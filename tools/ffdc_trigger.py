@@ -116,8 +116,10 @@ def _write_minimal_spyrecode(parent: str) -> str:
 def _record_report(reports, category: str, before: set[str], output_dir: Path) -> None:
     report_path = _new_report_path(_category_pattern(output_dir, category), before)
     if report_path is None:
-        print("  [WARN] No new report found — check FFDC output_dir")
-        return
+        raise SystemExit(
+            f"No new {category} report under {output_dir} — "
+            "check TORCH_SPYRE_FFDC=1 and TORCHINDUCTOR_CACHE_DIR"
+        )
     print(f"  Report written: {report_path}")
     if not hasattr(torch, "spyre") or not hasattr(torch.spyre, "get_diagnostic_report"):
         raise SystemExit("torch.spyre.get_diagnostic_report is not bound")
@@ -163,6 +165,9 @@ def main():
 
 def _run_scenarios(reports, output_dir: Path) -> None:
     # Survive prepare_kernel in __init__, then fail in run() / launch_jobplan.
+    # Clear leftover DUMP_SPYRE_CODE from the shell so Scenario A is not
+    # confused with unrelated debug dumps; torch-spyre only snapshots this
+    # key into the report (see ffdc.md), it does not read it for emit.
     os.environ.pop("DUMP_SPYRE_CODE", None)
 
     print("Scenario A: SpyreSDSCKernelRunner.run() → launch_jobplan raises")
@@ -218,6 +223,9 @@ def _run_scenarios(reports, output_dir: Path) -> None:
         )
 
     _record_report(reports, "unimplemented", before, output_dir)
+
+    if not reports:
+        raise SystemExit("No FFDC reports recorded from Scenario A or B")
 
     # ── Summary ─────────────────────────────────────────────────────────────────
     print("\n=== Captured Report Fields ===")

@@ -46,14 +46,21 @@ guide is the field/support path: enable → fail → retrieve → triage.
    behaviour: hooks use nested `try/except` so a collection failure
    cannot mask the original exception.
 
-3. **Retrieve** the newest valid report. Use the same search directory
-   the failing process used (`TORCHINDUCTOR_CACHE_DIR` / `TMPDIR`). A
-   new interpreter does **not** inherit an isolated cache unless you
-   export it **before** the first Inductor `cache_dir()` call (often
-   during `import torch`). That helper assigns
-   `TORCHINDUCTOR_CACHE_DIR` to a default when it is unset, and
-   `get_diagnostic_report()` will miss reports written under a
-   different root.
+3. **Retrieve** the newest valid report. Search the same **report**
+   directory the failing process wrote — usually
+   `<cache-root>/torch-spyre/ffdc_reports` (where `<cache-root>` is
+   `$TORCHINDUCTOR_CACHE_DIR` or else
+   `<tempdir>/torchinductor_<user>`), or
+   `<tempdir>/torch-spyre-ffdc` when Inductor `cache_dir()`
+   resolution fails. See
+   [Where reports are stored](#where-reports-are-stored). A new
+   interpreter does **not** inherit an isolated cache unless you
+   export `TORCHINDUCTOR_CACHE_DIR` **before** the first Inductor
+   `cache_dir()` call (often during `import torch`). That helper
+   assigns `TORCHINDUCTOR_CACHE_DIR` to a default when it is unset,
+   and no-arg `get_diagnostic_report()` will miss reports written
+   under a different root. To point at a specific tree, pass that
+   report directory as `output_dir` (not the cache root).
 
    ```python
    import torch
@@ -296,10 +303,16 @@ Capture and retrieval can use different environment variables:
   that variable is unset in a later session.
 - The **search directory** must still match. If
   `TORCHINDUCTOR_CACHE_DIR` or `TMPDIR` changed between capture and
-  retrieval, pass the original path as `output_dir`. If a tool or
-  test isolated the cache, export the printed
-  `TORCHINDUCTOR_CACHE_DIR` **before** `import torch` in a new
-  interpreter, then call `get_diagnostic_report()`.
+  retrieval, pass the original **report** directory as `output_dir`
+  — that is `<cache-root>/torch-spyre/ffdc_reports` (or
+  `<tempdir>/torch-spyre-ffdc` on the fallback path), **not** the
+  cache or `TMPDIR` root. `get_diagnostic_report(output_dir=...)`
+  searches that directory for JSON files; it does not append
+  `torch-spyre/ffdc_reports` for you. If a tool or test isolated the
+  cache, either pass that report directory explicitly, or export the
+  printed `TORCHINDUCTOR_CACHE_DIR` **before** `import torch` in a
+  new interpreter and call `get_diagnostic_report()` with no
+  `output_dir`.
 
 ## Report schema
 
