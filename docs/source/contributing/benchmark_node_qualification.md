@@ -45,7 +45,7 @@ qualify(environment) ->
   { status: qualified | unqualified,
     reasons: [CODE, ...],   # empty if and only if qualified
     checked_at: UTC timestamp,
-    criteria_version: "4950-1" }
+    criteria_version: "4950-2" }
 ```
 
 `qualified` means the observation may proceed to the other eligibility
@@ -67,16 +67,18 @@ Public text names architecture and device **class** only.
 (card-count-and-topology)=
 ## 2. Card count and topology
 
-Required for every **card-using** job. A job is card-using when it
-**declares or requests** one or more Spyre cards. Successful lock is not
-the test. A failed lock or a short lock stays card-using: record
-`ENV_NO_CARD_LOCK` or `ENV_CARD_COUNT_MISMATCH`. Do not reclassify that
-job as not applicable.
+Required unless the job's first present intended source is an explicit 0.
+A job is card-using when it **declares or requests** one or more Spyre
+cards. Successful lock is not the test. A failed lock or a short lock
+stays card-using: record `ENV_NO_CARD_LOCK` or `ENV_CARD_COUNT_MISMATCH`.
+Do not reclassify that job as not applicable. When no intended source is
+present, card usage cannot be ruled out, so this section fails closed.
 
-A job whose first present intended source is zero is not card-using. This
-section does not apply to it. A failed lock, a short lock, or a measured
-count with no declaration is not that case: those stay on the fail path
-below and are never reclassified as not applicable.
+A job is not card-using only when its first present intended source is an
+explicit 0. That is the only case where this section does not apply. Do not
+treat a missing intended count as zero. A failed lock, a short lock, a
+measured count with no declaration, or no card-count evidence at all stays
+on the fail path below and is never reclassified as not applicable.
 
 ### Intended count
 
@@ -106,10 +108,10 @@ Short-circuit only after that reason is stored.
 
 1. The first present intended source is 0. The job is not card-using.
    Stop. This section does not apply.
-2. No intended source is present. If a measured count is present, store
-   it as recorded only, do not treat it as a declaration, fail
-   `ENV_CARD_COUNT_MISSING`, and stop. If no measured count is present,
-   the job did not declare cards, this section does not apply, and stop.
+2. No intended source is present. Card usage cannot be ruled out. If a
+   measured count is present, store it as recorded only and do not treat
+   it as a declaration. Whether or not that measured count is present,
+   fail `ENV_CARD_COUNT_MISSING` and stop. Do not skip this section.
 3. The first present intended source is greater than or equal to 1. The
    job is card-using. Stay on this path if the lock fails or is short.
 4. The acquired lock quantity is absent or zero. Fail `ENV_NO_CARD_LOCK`.
@@ -124,10 +126,10 @@ Short-circuit only after that reason is stored.
 6. Intended card count differs from the other members of the series.
    Fail `ENV_TOPOLOGY_MISMATCH`.
 
-A job that uses cards but stamps neither a declaration nor a measured count
-cannot be told apart from a job that does not use cards. Producers must
-stamp the declaration. This page does not infer a card request from the
-suite name.
+A job that stamps neither a declaration nor a measured count has not
+declared zero. Record `ENV_CARD_COUNT_MISSING`. Non-card jobs must stamp
+an explicit 0. This page does not infer a card request, or the absence of
+one, from the suite name.
 
 ### Gates
 
@@ -136,7 +138,7 @@ suite name.
 
 | Check | Pass | Fail |
 | --- | --- | --- |
-| Intended count | See the order above. Fail only when a measured count is present and no intended source is present. Zero, or neither source, skips this section | `ENV_CARD_COUNT_MISSING` |
+| Intended count | First present source is greater than or equal to 1, then continue. An explicit 0 skips this section. No intended source fails, with or without a measured count | `ENV_CARD_COUNT_MISSING` |
 | Acquired lock | Card-using job acquired a lock quantity greater than zero | `ENV_NO_CARD_LOCK` |
 | Recorded vs intended | Recorded count from step 5 is present and equal to intended. Lock and measured count must agree when both are present. A short lock stays card-using | `ENV_CARD_COUNT_MISMATCH` |
 | Series topology | Intended card count matches the other members of the series | `ENV_TOPOLOGY_MISMATCH` |
@@ -272,7 +274,7 @@ in this change, and none of them turns a missing value into a pass.
 | Dimension | Today | Follow-on |
 | --- | --- | --- |
 | Architecture | Stamped on the run | Keep |
-| Card count | Often not a first-class field on perf rows | Stamp **declared** intended count and a separate recorded count. Do not overload one `num_cards` |
+| Card count | Often not a first-class field on perf rows | Stamp a declared intended count, including an explicit 0 for a non-card job, and a separate recorded count. Absence is `ENV_CARD_COUNT_MISSING`, not a skip |
 | Flex mode | Often absent on `report.xml` | Keep optional. Absence is not a qualification failure |
 | Environment id | Not on the public run API | Multi-AIU / ingest track, coordinated with [run identity][run-identity] |
 | Isolation | Card lock exists for product-test; contention is operational | Ops keeps one regression-grade set at a time on a shared card pool |
